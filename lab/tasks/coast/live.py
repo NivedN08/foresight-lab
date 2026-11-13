@@ -230,7 +230,8 @@ def build_state(now: datetime, ledger: SealedLedger, wc: WaterCycle, stale: list
     if btw.exists():
         b = json.loads(btw.read_text())
         backtest_waves = {"generated_at": b.get("generated_at"), "days": b.get("days"), "unit": b.get("unit"),
-                          "table": b.get("table"), "paired_seed_vs": b.get("paired_seed_vs")}
+                          "table": b.get("table"), "paired_seed_vs": b.get("paired_seed_vs"),
+                          "note": b.get("note")}
     state = {
         "generated_at": to_iso(now),
         "ledger": {"path": str(ledger.dir.relative_to(ROOT)) if ledger.dir.is_relative_to(ROOT) else str(ledger.dir),
@@ -340,7 +341,12 @@ def main():
             traceback.print_exc()
         if args.mode == "once":
             break
-        time.sleep(max(30.0, args.interval - (time.time() - start)))
+        # Wait on the wall clock in short naps. A single long sleep does not
+        # advance while the computer is asleep, so cycles would be missed for
+        # as long again after it wakes.
+        next_due = start + args.interval
+        while time.time() < max(next_due, start + 30.0):
+            time.sleep(15.0)
 
 
 if __name__ == "__main__":

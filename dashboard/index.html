@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>foresight-lab</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1L15 8L8 15L1 8Z' fill='%23B4237F'/%3E%3C/svg%3E">
+  <link rel="preload" href="fonts/plex-cond-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/newsreader-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+  <script src="vendor/d3.min.js"></script>
+  <script src="vendor/topojson-client.min.js"></script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">foresight-lab</div>
+    <nav class="tabs" role="tablist" aria-label="Application">
+      <button role="tab" id="tab-coast" data-view="coast" aria-controls="view-coast">Coast</button>
+      <button role="tab" id="tab-turb" data-view="turb" aria-controls="view-turb">Turbulence</button>
+    </nav>
+    <div class="status" aria-live="polite">
+      <span class="chain"></span>
+      <span class="age"></span>
+    </div>
+  </header>
+  <main>
+    <section class="view" id="view-coast" role="tabpanel" aria-labelledby="tab-coast" hidden></section>
+    <section class="view" id="view-turb" role="tabpanel" aria-labelledby="tab-turb" hidden></section>
+  </main>
+</body>
+</html>

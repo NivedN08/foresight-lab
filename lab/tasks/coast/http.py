@@ -26,14 +26,17 @@ class FetchError(Exception):
 
 class Client:
     def __init__(self, cache_dir: str | Path = DEFAULT_CACHE, retries: int = 4,
-                 pause: float = 0.25, timeout: float = 40.0, offline: bool = False):
+                 pause: float = 0.25, timeout: float = 20.0, offline: bool = False,
+                 host_cooldown: float = 600.0):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.retries = retries
         self.pause = pause
         self.offline = offline
-        self._http = httpx.Client(timeout=timeout, headers={"User-Agent": USER_AGENT},
-                                  follow_redirects=True)
+        self.host_cooldown = host_cooldown
+        self._down_until: dict[str, float] = {}
+        self._http = httpx.Client(timeout=httpx.Timeout(timeout, connect=8.0),
+                                  headers={"User-Agent": USER_AGENT}, follow_redirects=True)
         self._last = 0.0
         self.log: list[str] = []
 
@@ -49,7 +52,17 @@ class Client:
                 return path.read_text()
         if self.offline:
             raise FetchError(f"offline and not cached: {url}")
+        host = httpx.URL(url).host
+        # Circuit breaker: once a host has stopped answering, do not let every
+        # further request to it eat the whole cycle. Use the cached copy (or
+        # fail fast) until the cool-down has passed.
+        if time.time() < self._down_until.get(host, 0.0):
+            if path.exists():
+                self.log.append(f"{host} is not answering; stale cache used for {url}")
+                return path.read_text()
+            raise FetchError(f"{host} is not answering and nothing is cached: {url}")
         err: Exception | None = None
+        network_failures = 0
         for attempt in range(self.retries):
             wait = self.pause - (time.time() - self._last)
             if wait > 0:
@@ -70,6 +83,11 @@ class Client:
                 raise
             except Exception as e:  # network errors, timeouts
                 err = e
+                network_failures += 1
+                if network_failures >= 2:
+                    self._down_until[host] = time.time() + self.host_cooldown
+                    self.log.append(f"{host} marked down for {self.host_cooldown:.0f} s: {e!r}")
+                    break
             time.sleep(min(30.0, 1.5 * 2 ** attempt))
         if path.exists():
             self.log.append(f"stale cache used for {url}: {err}")

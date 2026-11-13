@@ -95,8 +95,9 @@ def records(task: str, model: str | None = None, kind: str | None = None, statio
     model: one model name; kind: the record's task name (coast_water, coast_waves, turb);
     station: a coast station or buoy id (meta.station / meta.buoy); graded: "yes" or "no";
     due: only records whose target time has passed; since_hours: only target times within
-    this many hours before now; per_target="shortest": per model and target time keep the
-    shortest-lead record (latest sealed among equals); limit: newest records kept (max 500).
+    this many hours before now; per_target="latest": per model and target time keep only the
+    latest-sealed record (the one the turbulence grading reports on); limit: newest records
+    kept (max 500).
     """
     from datetime import datetime, timedelta, timezone
 
@@ -121,15 +122,13 @@ def records(task: str, model: str | None = None, kind: str | None = None, statio
         if lo and r["target_time"] < lo:
             continue
         out.append(r)
-    if per_target == "shortest":
+    if per_target == "latest":
         best: dict[tuple, dict] = {}
         for r in out:
             k = (r["model"], r["target_time"])
-            lead = (r.get("meta") or {}).get("lead_hours", (r.get("meta") or {}).get("lead_h", 0))
-            cur = best.get(k)
-            if cur is None or (lead, -r["seq"]) < (cur[0], -cur[1]["seq"]):
-                best[k] = (lead, r)
-        out = sorted((v[1] for v in best.values()), key=lambda r: r["seq"])
+            if k not in best or r["seq"] > best[k]["seq"]:
+                best[k] = r
+        out = sorted(best.values(), key=lambda r: r["seq"])
     out = out[-max(1, min(limit, 500)):]
     keep = ("seq", "task", "model", "case_id", "issued_at", "target_time", "sealed_at", "hash", "meta")
     slim = [{k: r.get(k) for k in keep}
