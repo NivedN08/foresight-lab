@@ -70,6 +70,74 @@ def ledger(task: str, tail: int = 40):
                         headers={"Cache-Control": "no-store"})
 
 
+_RECORDS_CACHE: dict[str, tuple] = {}
+
+
+def _joined_cached(task: str) -> list[dict]:
+    """Sealed records joined with their grades, re-read only when a file changed."""
+    led = SealedLedger(_task_dir(task))
+    key = tuple((p.stat().st_mtime_ns, p.stat().st_size) if p.exists() else None
+                for p in (led.sealed_path, led.grades_path))
+    hit = _RECORDS_CACHE.get(task)
+    if hit is None or hit[0] != key:
+        hit = (key, led.joined())
+        _RECORDS_CACHE[task] = hit
+    return hit[1]
+
+
+@app.get("/api/{task}/records")
+def records(task: str, model: str | None = None, kind: str | None = None, station: str | None = None,
+            graded: str | None = None, due: bool = False, since_hours: float | None = None,
+            per_target: str | None = None, prediction: bool = True, limit: int = 40):
+    """Recent sealed records with their prediction and grade, for the log row and the
+    turbulence time scrubber.
+
+    model: one model name; kind: the record's task name (coast_water, coast_waves, turb);
+    station: a coast station or buoy id (meta.station / meta.buoy); graded: "yes" or "no";
+    due: only records whose target time has passed; since_hours: only target times within
+    this many hours before now; per_target="shortest": per model and target time keep the
+    shortest-lead record (latest sealed among equals); limit: newest records kept (max 500).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    lo = (now - timedelta(hours=since_hours)).strftime("%Y-%m-%dT%H:%M:%SZ") if since_hours else None
+    hi = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    out = []
+    for r in _joined_cached(task):
+        if model and r["model"] != model:
+            continue
+        if kind and r.get("task") != kind:
+            continue
+        meta = r.get("meta") or {}
+        if station and station not in (meta.get("station"), meta.get("buoy")):
+            continue
+        if graded == "yes" and not r["grade"]:
+            continue
+        if graded == "no" and r["grade"]:
+            continue
+        if due and r["target_time"] > hi:
+            continue
+        if lo and r["target_time"] < lo:
+            continue
+        out.append(r)
+    if per_target == "shortest":
+        best: dict[tuple, dict] = {}
+        for r in out:
+            k = (r["model"], r["target_time"])
+            lead = (r.get("meta") or {}).get("lead_hours", (r.get("meta") or {}).get("lead_h", 0))
+            cur = best.get(k)
+            if cur is None or (lead, -r["seq"]) < (cur[0], -cur[1]["seq"]):
+                best[k] = (lead, r)
+        out = sorted((v[1] for v in best.values()), key=lambda r: r["seq"])
+    out = out[-max(1, min(limit, 500)):]
+    keep = ("seq", "task", "model", "case_id", "issued_at", "target_time", "sealed_at", "hash", "meta")
+    slim = [{k: r.get(k) for k in keep}
+            | ({"prediction": r["prediction"]} if prediction else {})
+            | {"grade": r["grade"]} for r in out]
+    return JSONResponse({"now": hi, "records": slim}, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/")
 def index():
     return FileResponse(DASHBOARD / "index.html")

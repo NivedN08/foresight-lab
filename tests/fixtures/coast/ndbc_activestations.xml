@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<stations>
+  <station id="46002" lat="42.56" lon="-130.523" elev="0" name="WEST OREGON - 275NM West of Coos Bay, OR" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46006" lat="40.73" lon="-137.42" elev="0" name="SOUTHEAST PAPA - 600NM West of Eureka, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="n" currents="n" waterquality="n" dart="n"/>
+  <station id="46011" lat="34.937" lon="-120.999" elev="0" name="SANTA MARIA - 21NM NW of Point Arguello, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46012" lat="37.356" lon="-122.881" elev="0" name="HALF MOON BAY - 24NM SSW of San Francisco, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="usv" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46013" lat="38.235" lon="-123.317" elev="0" name="BODEGA BAY - 48NM NW of San Francisco, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46014" lat="39.225" lon="-123.98" elev="0" name="PT ARENA - 19NM North of Point Arena, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46022" lat="40.716" lon="-124.54" elev="0" name="EEL RIVER - 17NM WSW of Eureka, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46026" lat="37.75" lon="-122.838" elev="0" name="SAN FRANCISCO - 18NM West of San Francisco, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46027" lat="41.84" lon="-124.382" elev="0" name="ST GEORGES - 8 NM NW of Crescent City, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46028" lat="35.763" lon="-121.9" elev="0" name="CAPE SAN MARTIN - 55NM West NW of Morro Bay, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46042" lat="36.787" lon="-122.408" elev="0" name="MONTEREY - 27NM WNW of Monterey, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46050" lat="44.679" lon="-124.535" elev="0" name="STONEWALL BANK - 20NM West of Newport, OR" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46059" lat="38.067" lon="-129.895" elev="0" name="WEST CALIFORNIA - 357NM West of San Francisco, CA" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46089" lat="45.928" lon="-125.815" name="TILLAMOOK, OR - 85 NM WNW of Tillamook, OR" owner="NDBC" pgm="NDBC Meteorological/Ocean" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46214" lat="37.944" lon="-123.466" elev="0" name="Point Reyes, CA (029)" owner="SCRIPPS" pgm="IOOS Partners" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+  <station id="46237" lat="37.788" lon="-122.634" elev="0" name="San Francisco Bar, CA  (142)" owner="SCRIPPS" pgm="IOOS Partners" type="buoy" met="y" currents="n" waterquality="n" dart="n"/>
+</stations>

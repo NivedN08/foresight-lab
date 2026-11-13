@@ -1,0 +1,1 @@
+{"count": 303, "units": null, "stations": [{"tidal": true, "state": "CA", "id": "9410170", "name": "San Diego", "lat": 32.715557, "lng": -117.17667}, {"tidal": true, "state": "CA", "id": "9414290", "name": "San Francisco", "lat": 37.806305, "lng": -122.46589}, {"tidal": true, "state": "WA", "id": "9447130", "name": "Seattle", "lat": 47.60264, "lng": -122.3393}], "self": null}

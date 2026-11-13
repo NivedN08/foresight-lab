@@ -1,0 +1,150 @@
+[
+{
+"tag": "2W",
+"forecastHour": 3,
+"validTime": "2026-11-14T00:00:00.000Z",
+"hazard": "TURB-HI",
+"geometryType": "AREA",
+"latlonpairs": 9,
+"frequency": null,
+"severity": "MOD",
+"due_to": null,
+"status": "NRML",
+"top": "410",
+"base": "200",
+"fzltop": null,
+"fzlbase": null,
+"level": null,
+"receiptTime": 1794602191,
+"issueTime": 1794602700,
+"expireTime": 1794625200,
+"product": "TANGO",
+"geom": "AREA",
+"coords": [
+{
+"lat": "42.05",
+"lon": "-112.42"
+},
+{
+"lat": "39.39",
+"lon": "-110.99"
+},
+{
+"lat": "34.95",
+"lon": "-107.99"
+},
+{
+"lat": "32.00",
+"lon": "-105.56"
+},
+{
+"lat": "31.57",
+"lon": "-108.27"
+},
+{
+"lat": "31.37",
+"lon": "-110.11"
+},
+{
+"lat": "39.64",
+"lon": "-114.66"
+},
+{
+"lat": "41.89",
+"lon": "-118.64"
+},
+{
+"lat": "42.05",
+"lon": "-112.42"
+}
+]
+},
+{
+"tag": "2W",
+"forecastHour": 3,
+"validTime": "2026-11-14T00:00:00.000Z",
+"hazard": "TURB-HI",
+"geometryType": "AREA",
+"latlonpairs": 16,
+"frequency": null,
+"severity": "MOD",
+"due_to": null,
+"status": "NRML",
+"top": "380",
+"base": "160",
+"fzltop": null,
+"fzlbase": null,
+"level": null,
+"receiptTime": 1794602191,
+"issueTime": 1794602700,
+"expireTime": 1794625200,
+"product": "TANGO",
+"geom": "AREA",
+"coords": [
+{
+"lat": "49.05",
+"lon": "-122.82"
+},
+{
+"lat": "41.80",
+"lon": "-118.59"
+},
+{
+"lat": "39.59",
+"lon": "-114.72"
+},
+{
+"lat": "36.42",
+"lon": "-112.66"
+},
+{
+"lat": "31.37",
+"lon": "-110.11"
+},
+{
+"lat": "31.28",
+"lon": "-111.09"
+},
+{
+"lat": "32.77",
+"lon": "-114.55"
+},
+{
+"lat": "32.58",
+"lon": "-117.16"
+},
+{
+"lat": "33.42",
+"lon": "-121.65"
+},
+{
+"lat": "35.41",
+"lon": "-123.84"
+},
+{
+"lat": "39.74",
+"lon": "-127.04"
+},
+{
+"lat": "45.11",
+"lon": "-126.64"
+},
+{
+"lat": "48.35",
+"lon": "-128.02"
+},
+{
+"lat": "48.63",
+"lon": "-124.73"
+},
+{
+"lat": "48.30",
+"lon": "-123.71"
+},
+{
+"lat": "49.05",
+"lon": "-122.82"
+}
+]
+}
+]
