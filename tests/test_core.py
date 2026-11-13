@@ -93,6 +93,32 @@ def test_bootstrap_and_paired():
     assert same.diff.mean == 0
 
 
+def test_block_bootstrap_is_wider_than_case_bootstrap_on_correlated_errors():
+    from lab.core.stats import paired_block_bootstrap
+    rng = np.random.default_rng(3)
+    n_blocks, per = 40, 50
+    block_effect = rng.normal(0.0, 1.0, n_blocks)          # shared within a block
+    blocks = np.repeat(np.arange(n_blocks), per)
+    a = 5 + block_effect[blocks] + rng.normal(0, 0.1, n_blocks * per)
+    b = 5 + rng.normal(0, 0.1, n_blocks * per)
+    naive = paired_bootstrap(a, b)
+    blocked = paired_block_bootstrap(a, b, blocks)
+    assert abs(naive.diff.mean - blocked.diff.mean) < 1e-9
+    assert (blocked.diff.high - blocked.diff.low) > 3 * (naive.diff.high - naive.diff.low)
+    assert blocked.diff.n == n_blocks and blocked.n == n_blocks * per
+
+
+def test_splits_reject_overlap():
+    from lab.core.problem import Splits, Window
+    def win(start_h, n):
+        cs = [Case(f"c{start_h + i}", T0 + timedelta(hours=start_h + i), T0 + timedelta(hours=start_h + i + 1))
+              for i in range(n)]
+        return Window(cs, [{"v": 0.0}] * n)
+    Splits(win(0, 5), win(10, 5), win(20, 5), win(30, 5)).check_order()
+    with pytest.raises(ValueError):
+        Splits(win(0, 12), win(10, 5), win(20, 5), win(30, 5)).check_order()
+
+
 def test_auc():
     assert auc([0.1, 0.2, 0.8, 0.9], [0, 0, 1, 1]) == 1.0
     assert auc([0.9, 0.8, 0.2, 0.1], [0, 0, 1, 1]) == 0.0

@@ -62,6 +62,43 @@ def paired_bootstrap(errors_a, errors_b, n_boot: int = 2000, alpha: float = 0.05
     )
 
 
+def paired_block_bootstrap(errors_a, errors_b, blocks, n_boot: int = 2000, alpha: float = 0.05,
+                           seed: int = 0) -> PairedResult:
+    """Paired comparison that resamples whole blocks (for example station-days).
+
+    Forecast errors an hour apart at the same station are strongly correlated,
+    so resampling single cases makes intervals far too narrow. Here each block
+    is drawn or left out as a unit, and the statistic is the mean over all cases
+    in the drawn blocks.
+    """
+    a = np.asarray(errors_a, dtype=float)
+    b = np.asarray(errors_b, dtype=float)
+    if a.shape != b.shape or len(blocks) != a.size:
+        raise ValueError("errors and blocks must describe the same cases")
+    keep = ~(np.isnan(a) | np.isnan(b))
+    a, b = a[keep], b[keep]
+    if a.size == 0:
+        nan = float("nan")
+        return PairedResult(nan, nan, Interval(nan, nan, nan, 0), nan, 0)
+    labels = np.asarray(blocks, dtype=object)[keep]
+    _, inverse = np.unique(labels.astype(str), return_inverse=True)
+    n_blocks = int(inverse.max()) + 1
+    d = a - b
+    block_sum = np.bincount(inverse, weights=d, minlength=n_blocks)
+    block_n = np.bincount(inverse, minlength=n_blocks).astype(float)
+    rng = np.random.default_rng(seed)
+    draw = rng.integers(0, n_blocks, size=(n_boot, n_blocks))
+    means = block_sum[draw].sum(axis=1) / block_n[draw].sum(axis=1)
+    lo, hi = np.quantile(means, [alpha / 2, 1 - alpha / 2])
+    return PairedResult(
+        mean_a=float(a.mean()),
+        mean_b=float(b.mean()),
+        diff=Interval(float(d.mean()), float(lo), float(hi), n_blocks),
+        p_a_better=float((means < 0).mean()),
+        n=int(d.size),
+    )
+
+
 def auc(scores, labels) -> float:
     """Area under the ROC curve (probability a positive outranks a negative)."""
     s = np.asarray(scores, dtype=float)
