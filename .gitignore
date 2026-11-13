@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+.DS_Store
+.playwright-mcp/
+fable-team.zip
+cache/
+runs/
+*.log
+.pytest_cache/
+node_modules/
+
+# earlier idea drafts kept local only
+planning/*.pdf
