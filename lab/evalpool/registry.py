@@ -12,4 +12,4 @@ def get_problem(name: str, **kw):
     if name == "turb":
         from lab.tasks.turb.problem import TurbProblem
         return TurbProblem(**kw)
-    raise SystemExit(f"unknown problem {name!r}; known: coast_water, turb")
+    raise SystemExit(f"unknown problem {name!r}; known: coast_water, turb, series")
