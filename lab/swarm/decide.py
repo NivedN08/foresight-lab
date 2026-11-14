@@ -39,8 +39,10 @@ def decide(ok: bool, select, confirm, th: Thresholds = Thresholds()) -> tuple[bo
     if not (rel >= th.min_rel_improvement):
         reasons.append(f"select: relative improvement {rel:.2%} < {th.min_rel_improvement:.2%}")
     if not (d_conf <= th.confirm_max_diff):
-        reasons.append(f"confirm: mean difference {d_conf:+.4g} > {th.confirm_max_diff:+.4g} (worse)")
+        reasons.append("confirm: worse than the incumbent on the later (confirm) window")
+    # Reasons are written into findings that agents read later, so they carry no confirm-window
+    # figures; the numbers are in the decision event's `confirm` field and the finding's record.
     if reasons:
         return False, "rejected: " + "; ".join(reasons)
     return True, (f"accepted: select P(better) {p:.3f}, relative improvement {rel:.2%}, "
-                  f"confirm difference {d_conf:+.4g}")
+                  "not worse on the later (confirm) window")

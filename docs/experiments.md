@@ -6,9 +6,10 @@ same problem and budget. `lab.experiments.matrix` runs a matrix; `lab.experiment
 its runs into tables.
 
 ```
-.venv/bin/python -m lab.experiments.matrix run lab/experiments/configs/claim1_coast.json --dry-run
-.venv/bin/python -m lab.experiments.matrix run lab/experiments/configs/claim1_coast.json [--parallel 2] [--only swarm]
-.venv/bin/python -m lab.experiments.report claim1_coast [--target 2.5] [--compare swarm,single_agent]
+.venv/bin/python -m lab.experiments.matrix run lab/experiments/configs/claim1_ladder_coast.json --dry-run
+.venv/bin/python -m lab.experiments.matrix run lab/experiments/configs/claim1_ladder_coast.json [--parallel 2] [--only researcher_full]
+.venv/bin/python -m lab.experiments.report claim1_ladder_coast [--target-rel 0.05] [--compare researcher_full,single_agent]
+scripts/run_overnight.sh     # all four matrices in order, each followed by its report
 ```
 
 ## How a matrix runs
@@ -34,15 +35,17 @@ its runs into tables.
 ## The config
 
 ```json
-{"name": "claim1_coast", "comment": "...", "problem": "coast_water",
- "budget": {"generations": 6, "proposals": 4, "max_cost_usd": 5.0},
+{"name": "claim1_ladder_coast", "comment": "...", "problem": "coast_water",
+ "budget": {"generations": 6, "proposals": 4, "max_cost_usd": 4.0},
+ "target": {"rule": "...", "rel": 0.05},
  "seeds": [1, 2],
- "arms": [{"name": "swarm", "mode": "swarm", "memory": "vector", "search": "openalex",
+ "arms": [{"name": "researcher_full", "mode": "researcher", "memory": "vector", "search": "openalex",
            "search_fallback": ["arxiv"]}, ...]}
 ```
 
 Arm keys:
-- `mode`: `swarm`, `single_agent` or `random_mutation`.
+- `mode`: `researcher` (the default), `pipeline` (`swarm` is its old name), `single_agent` or
+  `random_mutation`. See `docs/swarm.md`.
 - `memory` and `search`: as in `docs/swarm.md`.
 - `search_fallback`: a list; `[]` means no fallback.
 - `models` and `llm`.
@@ -56,8 +59,8 @@ Arm keys:
 ### Carrying knowledge between problems (`carry`)
 
 `warm_from` names the run to carry from. It is either a run directory, or
-`{"matrix": "claim1_coast", "arm": "swarm", "seed": "same"}`, meaning that arm's run with the
-same seed.
+`{"matrix": "claim1_ladder_coast", "arm": "researcher_memory", "seed": "same"}`, meaning that
+arm's run with the same seed.
 
 | `carry` | What the run starts with | What it isolates |
 |---|---|---|
@@ -81,23 +84,55 @@ The protocol's control "fresh, handed the old best forecaster and a cheat sheet"
 What remains to control for is familiarity with the code interface, and that is what
 `cheat_sheet` gives.
 
+## What the first design showed
+
+The first claim 1 matrix (`runs/exp/claim1_coast`, 6 generations x 4 proposals, seeds 1 and 2) put
+the first design, now `pipeline`, against two baselines. The pipeline was analyst, closed-book,
+scout from keyless scholarly search, and an engineer forced to implement the scouted claim.
+Results, by final confirm loss (cm):
+
+| arm | equal proposals (final) | equal dollars ($0.82, the cheapest run) | $ per proposal |
+|---|---|---|---|
+| pipeline (then "swarm") | 2.999 (2.972 to 3.026) | 3.015 (3.003 to 3.026) | 0.115 |
+| single_agent | 2.698 (2.692 to 2.703) | 2.698 (2.692 to 2.703) | 0.038 |
+| random_mutation | 3.239 (no change from the seed) | n/a (costs nothing) | 0 |
+
+The single agent had the lower loss on both seeds, on both bases. That is too few seeds to test,
+but the direction was clear. Forcing a strong model to implement a claim scouted by a small model
+from keyless scholarly search did worse than letting the strong model choose its own change.
+
+So the design changed. The `researcher` mode keeps the single strong call and offers the lab's
+two assets, the notebook and the ideas board, as inputs it may use or ignore. The experiments
+became a ladder that adds one asset at a time. The old result directories (`runs/exp/claim1_coast`,
+`runs/exp/claim2_transfer_turb`) are kept; the new matrices write to new names.
+
 ## The ready-made matrices
 
-All four use small budgets (6 generations x 4 proposals, seeds 1 and 2, $5 cap per run). Raise
-`generations` and `seeds` for the runs that go in the pitch: the protocol asks for five seeds for
-fresh and warm and three for the shuffled arm, and the report will not test a difference on fewer
-than five.
+All four use small budgets: 6 generations x 4 proposals, seeds 1 and 2, a $4 cap per run, and the
+fixed target rule (5% below the seed's confirm loss). Raise `generations` and `seeds` for the runs
+that go in the pitch. The protocol asks for five seeds for fresh and warm and three for the
+shuffled arm, and the report will not test a difference on fewer than five.
 
 | Config | Claim | Arms | Compare |
 |---|---|---|---|
-| `claim1_coast.json` | 1: the lab beats simpler uses of the same budget | `swarm`, `single_agent`, `random_mutation` | swarm against each baseline: final confirm loss, time to target |
-| `claim3_search_coast.json` | 3: search finds what the model did not know | `search_openalex`, `search_arxiv`, `search_off`, `search_exa` (needs `EXA_API_KEY`) | the Search table; each arm uses one backend, no fallback |
-| `claim4_memory_coast.json` | 4: shared memory pays | `memory_none`, `memory_full_context`, `memory_vector`, `memory_pastdev` (needs `PAST_API_KEY`) | final loss, minutes to target, dollars, recall latency: reported separately |
-| `claim2_transfer_turb.json` | 2: the lab gets better at research | `fresh`, `cheat_sheet`, `warm`, `warm_notebook`, `warm_shuffled` on turbulence, carrying from claim 1's `swarm` arm | warm against fresh and cheat_sheet; warm_shuffled against warm_notebook |
+| `claim1_ladder_coast.json` | 1: the lab beats simpler uses of the same budget, and each asset pays | `random_mutation`, `single_agent`, `pipeline`, `researcher_plain`, `researcher_memory`, `researcher_search`, `researcher_full` | up the ladder, at equal proposals and at equal dollars |
+| `claim4_memory_coast.json` | 4: shared memory pays | researcher, search off: `memory_none`, `memory_full_context`, `memory_vector`, `memory_pastdev` (needs `PAST_API_KEY`) | final loss, minutes to target, dollars, recall latency: reported separately |
+| `claim3_search_coast.json` | 3: search finds what the model did not know | researcher, vector memory: `search_off`, `search_openalex`, `search_arxiv`, `search_exa` (needs `EXA_API_KEY`) | origin and board tables; each arm uses one backend, no fallback |
+| `claim2_transfer_turb_v2.json` | 2: the lab gets better at research | researcher, vector memory, search off on turbulence: `fresh`, `cheat_sheet`, `warm_notebook`, `warm_shuffled`, `warm`, carrying from claim 1's `researcher_memory` arm | warm against fresh and cheat_sheet; warm_shuffled against warm_notebook |
 
-`warm_notebook` was added to claim 2 so the shuffled arm has a comparator that differs only in
-the notebook's content. Run claim 1 before claim 2; until a source run has finished, its warm
-arms are `blocked`.
+What each rung of the ladder isolates:
+- `single_agent` vs `random_mutation`: what a strong model adds over blind search at the same
+  number of evaluations.
+- `researcher_plain` vs `single_agent`: the researcher prompt itself. That is the strategy
+  suggestion, the header and one repair attempt.
+- `researcher_memory` vs `researcher_plain`: the notebook.
+- `researcher_search` vs `researcher_plain`: the ideas board.
+- `researcher_full`: both assets.
+- `pipeline`: the first design, for the record.
+
+`scripts/run_overnight.sh` runs claim 1, claim 4, claim 3, then claim 2, each with `--parallel 2`
+and followed by its report. Claim 2's warm arms wait, marked `blocked`, until their claim 1 source
+run has finished.
 
 ## Reading the report
 
@@ -130,6 +165,13 @@ arm with no finished run is marked partial. Runs written before `became_incumben
   For each run, the report gives the proposals, dollars and minutes until the incumbent first
   reached the target. Runs that never reached it are listed as "not reached" (or "not reached
   (yet)" while running) and counted in "k of n reached", never dropped.
+- **Where the ideas came from**: per arm and origin (own, notebook, search, unstated for the
+  researcher; search or closed_book for the pipeline; single_agent; random_mutation), the number of
+  proposals, passed and adopted. For researcher arms with search, a board table gives:
+  - ideas offered and used;
+  - how many used ideas passed and how many were adopted;
+  - the share of passed search-origin changes that the strong model had not listed closed-book
+    before seeing the board.
 - **Search**, by arm and backend: searches made (real calls, cache hits excluded) and failed,
   claims from search, accepted, the share of accepted search claims that were not already known
   closed-book, and accepted claims per 100 searches. When summaries record cost per role, a second
@@ -145,23 +187,26 @@ arm with no finished run is marked partial. Runs written before `became_incumben
 ## Cost and time to expect
 
 `--dry-run` estimates from runs already on disk for the same problem, preferring finished runs of
-the same mode. Measured so far, from the coast run `runs/lab/coast_water/20261114T000629Z-s1-90f1`
-(18 generations x 6 proposals, stopped at its cost cap):
+the same mode. Measured on coast water, per proposal:
 
-- about **$0.14 per swarm proposal**; the engineer's calls (Sonnet) are about $0.10 of that;
-- about **94 s per generation** of six concurrent proposals.
+| mode | $ per proposal | time | measured on |
+|---|---|---|---|
+| researcher (memory + search) | 0.071, of which scouting 0.015 | ~1.3 min per generation of 4 | smoke run `runs/lab/coast_water/20261114T025918Z-s0-4c97`, 2 x 4 proposals |
+| single_agent | 0.034 to 0.041 | ~0.4 min per generation of 4 | `runs/exp/claim1_coast/single_agent` |
+| pipeline | 0.114 to 0.141 | ~1.3 to 1.6 min per generation | `runs/exp/claim1_coast/swarm`, the long run `...000629Z-s1-90f1` |
+| random_mutation | 0 | ~0.15 min per generation | `runs/exp/claim1_coast/random_mutation` |
 
-That run used the prompts from before the closed-book and scout steps were shown the description
-and the incumbent, so current proposals will cost somewhat more. The dry run of
-`claim1_coast.json` on 14 Nov estimated:
+In the smoke run, the researcher call itself cost about $0.055 per proposal. Scouting costs about
+$0.06 per generation (one Sonnet `anticipate` call and three Haiku calls), and it is paid only when
+search is on.
 
-- swarm: ~$3.38 and ~9 min per run;
-- single_agent: ~$2.49 per run, priced at the engineer calls;
-- random_mutation: $0;
-- about **$12 for the whole matrix**, and ~28 min with `--parallel 2`.
+The dry runs of 14 Nov estimated:
+- `claim1_ladder_coast`: about $22, ~44 min with `--parallel 2`;
+- `claim4_memory_coast`: about $10, ~24 min (the past.dev arm skipped without `PAST_API_KEY`);
+- `claim3_search_coast`: about $10, ~24 min (the Exa arm skipped without `EXA_API_KEY`);
+- `claim2_transfer_turb_v2`: about $8.50, ~14 min. Its warm arms wait for claim 1.
 
-The times for the baselines are upper bounds, borrowed from swarm runs. The dry runs of claims 3
-and 4 estimate about $20 each at the default budget (three swarm arms x 2 seeds), because the
-keyed arm is skipped without its key. With the key set, add about $7 for that arm's two runs.
-Claim 2 has five swarm arms on turbulence, which has no measured run yet, so its dry run reports
-the cost as unknown. Its warm arms show as blocked until claim 1's swarm runs have finished.
+So the full overnight script comes to about $50 and about 1.8 hours with `--parallel 2`.
+
+Every researcher arm is priced from the one measured researcher run, which had memory and search
+on. Arms without search should come in about $0.015 per proposal cheaper. The cap is $4 per run.

@@ -249,6 +249,11 @@ RAISE = object()   # put in a script to make that call fail
 
 # substrings that identify each role's prompt (see lab/swarm/prompts.py)
 ROLE_KEYS = {
+    "researcher": "# A place you might look (a suggestion, not an order)",
+    "anticipate": "Without searching, list the five to eight",
+    "scout_queries": "literature search queries (4 to 10 words each)",
+    "scout_board": "Extract at most",
+    "board_judge": "Changes a strong model said it would try next",
     "single_agent": "# Your task (single agent)",
     "playbook": "Write a short playbook",
     "repair": "This candidate failed.",
@@ -275,6 +280,22 @@ def scout_json(relevance: str, chosen=1) -> str:
     d.update(source_relevance=relevance, chosen=chosen)
     return json.dumps(d)
 JUDGE_JSON = '{"known_closed_book": true, "why": "same idea"}'
+ANTICIPATE_JSON = '{"changes": ["fit y as a straight line in x", "shrink toward the mean"]}'
+QUERIES_JSON = '{"queries": ["least squares line fit", "linear regression noise"]}'
+BOARD_JSON = ('{"ideas": [{"hit": 1, "change": "fit y as a least-squares line in x", "why": "y is linear in x", '
+              '"leads": "all", "source_relevance": "domain", "source_title": "Method of least squares", '
+              '"source_url": "https://example.org/ls"}, '
+              '{"hit": 1, "change": "predict the sign of x", "why": "no reason", "leads": "none", '
+              '"source_relevance": "unrelated", "source_title": "Unrelated", "source_url": "https://example.org/u"}, '
+              '{"hit": 1, "change": "robust Huber fit of y on x", "why": "outliers", "leads": "all", '
+              '"source_relevance": "method", "source_title": "Robust statistics", "source_url": "https://example.org/r"}]}')
+BOARD_JUDGE_JSON = '{"known": {"g1i1": true, "g1i2": false}}'
+
+
+def researched(src: str, source: str = "own", change: str = "fit a least-squares line in x",
+               why: str = "y is linear in x at all leads") -> str:
+    """A researcher reply: the header lines, then the file."""
+    return fence(f"# Change: {change}\n# Idea source: {source}\n# Why: {why}\n{src}")
 
 
 class ScriptedLLM(FakeBackend):
@@ -288,7 +309,9 @@ class ScriptedLLM(FakeBackend):
         super().__init__()
         defaults = {"analyst": [ANALYST_JSON], "closed_book": [CLOSED_BOOK_JSON], "scout": [SCOUT_JSON],
                     "judge": [JUDGE_JSON], "engineer": [fence(BETTER)], "repair": [fence(BETTER)],
-                    "single_agent": [fence(BETTER)],
+                    "single_agent": [fence(BETTER)], "researcher": [researched(BETTER)],
+                    "anticipate": [ANTICIPATE_JSON], "scout_queries": [QUERIES_JSON], "scout_board": [BOARD_JSON],
+                    "board_judge": [BOARD_JUDGE_JSON],
                     "playbook": ["# Playbook\n- Fitting a line in x paid off."]}
         self.queues = {k: list(v) for k, v in {**defaults, **(scripts or {})}.items()}
         self.cost_per_call = cost_per_call
@@ -330,3 +353,9 @@ class CannedSearch:
 
     def stats(self):
         return {"backend": self.name, "searches": self.searches, "cache_hits": 0}
+
+
+def researched_source(src: str, **kw) -> str:
+    """The candidate file the loop stores for a `researched` reply."""
+    from lab.llm import extract_code
+    return extract_code(researched(src, **kw))

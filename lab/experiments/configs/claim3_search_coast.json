@@ -1,11 +1,11 @@
 {
  "name": "claim3_search_coast",
- "comment": "Claim 3: search finds what the model did not already know. Same lab with vector memory; only the search backend differs. No fallback inside an arm, so each arm measures one backend (a failed search falls back to a closed-book claim and is counted as failed). Read the Search table: claims from search, accepted, share not known closed-book, accepted per 100 searches.",
+ "comment": "Claim 3: search finds what the model did not already know. Researcher mode with vector memory; only the search backend behind the ideas board differs, with no fallback inside an arm. Read the origin and board tables: ideas offered and used, passed, and the share of passed search changes the strong model had not listed closed-book.",
  "problem": "coast_water",
  "budget": {
   "generations": 6,
   "proposals": 4,
-  "max_cost_usd": 5.0
+  "max_cost_usd": 4.0
  },
  "target": {
   "rule": "time to target: confirm loss at or below (1 - rel) x the starting formula's (seed's) generation-0 confirm loss",
@@ -18,30 +18,30 @@
  ],
  "arms": [
   {
+   "name": "search_off",
+   "comment": "No board: the reference.",
+   "mode": "researcher",
+   "memory": "vector",
+   "search": "none"
+  },
+  {
    "name": "search_openalex",
-   "mode": "swarm",
+   "mode": "researcher",
    "memory": "vector",
    "search": "openalex",
    "search_fallback": []
   },
   {
    "name": "search_arxiv",
-   "mode": "swarm",
+   "mode": "researcher",
    "memory": "vector",
    "search": "arxiv",
    "search_fallback": []
   },
   {
-   "name": "search_off",
-   "comment": "No search: every claim is closed-book. The reference for what search adds.",
-   "mode": "swarm",
-   "memory": "vector",
-   "search": "none"
-  },
-  {
    "name": "search_exa",
    "comment": "Requires EXA_API_KEY; skipped with a message when it is not set.",
-   "mode": "swarm",
+   "mode": "researcher",
    "memory": "vector",
    "search": "exa",
    "search_fallback": [],

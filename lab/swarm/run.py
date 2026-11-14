@@ -3,13 +3,16 @@
     .venv/bin/python -m lab.swarm.run --problem coast_water --generations 3 --proposals 4 \
         --memory vector --search openalex [--llm claude_cli] [--warm-from <run_dir>]
     .venv/bin/python -m lab.swarm.run --resume <run_dir> [--generations 5]
+    .venv/bin/python -m lab.swarm.run --mode pipeline ...            (the first design: analyst, scout, engineer)
     .venv/bin/python -m lab.swarm.run --mode single_agent ...        (baseline: one model call per proposal)
     .venv/bin/python -m lab.swarm.run --mode random_mutation ...     (baseline: no model)
     .venv/bin/python -m lab.swarm.run --warm-from <run_dir> --shuffle-memory ...   (control arm)
 
+The default mode is researcher: one strong call per proposal, which may use the
+notebook (--memory) and an ideas board scouted from search (--search) or ignore them.
 A warm run imports the earlier run's findings into its notebook and carries its
-playbook.md into the analyst and engineer prompts; it still starts from the
-problem's seed candidate unless --start-source is given.
+playbook.md into the prompts; it still starts from the problem's seed candidate
+unless --start-source is given.
 """
 from __future__ import annotations
 
@@ -53,9 +56,13 @@ def main(argv=None) -> int:
     ap.add_argument("--search-fallback", default=None,
                     help="comma-separated backends to try when the first fails or finds nothing "
                          "(default for openalex: arxiv); 'none' for no fallback")
-    ap.add_argument("--mode", default="swarm", choices=["swarm", "single_agent", "random_mutation"],
-                    help="swarm (default); single_agent: one model call per proposal; "
-                         "random_mutation: no model, constants perturbed or a term dropped")
+    ap.add_argument("--mode", default="researcher",
+                    choices=["researcher", "pipeline", "single_agent", "random_mutation", "swarm"],
+                    help="researcher (default): one strong call per proposal with optional notebook and ideas "
+                         "board; pipeline: analyst, scout, engineer (the first design; 'swarm' is its old name); "
+                         "single_agent: one model call per proposal; random_mutation: no model")
+    ap.add_argument("--scout-queries", type=int, default=3, help="researcher: search queries per generation")
+    ap.add_argument("--board-size", type=int, default=None, help="researcher: ideas on the board (default: proposals)")
     ap.add_argument("--shuffle-memory", action="store_true",
                     help="control arm: permute the outcomes of the findings imported by --warm-from")
     ap.add_argument("--llm", default="claude_cli")
@@ -79,7 +86,8 @@ def main(argv=None) -> int:
         problem = load_problem(cfg["problem"])
         pool, compare, splits = build_evaluator(problem, args.workers, args.evaluator)
         summary = run_lab(problem, pool, compare, llm_backend=cfg.get("llm_backend") or args.llm,
-                          mode=cfg.get("mode", "swarm"),
+                          mode=cfg.get("mode", "pipeline"),
+                          scout_queries=cfg.get("scout_queries", 3), board_size=cfg.get("board_size"),
                           search_fallback=cfg["search_chain"][1:] if "search_chain" in cfg else None,
                           memory=cfg.get("memory", args.memory), search=cfg.get("search", args.search),
                           generations=args.generations or cfg["generations"],
@@ -91,12 +99,12 @@ def main(argv=None) -> int:
 
     problem = load_problem(args.problem)
     pool, compare, splits = build_evaluator(problem, args.workers, args.evaluator)
+    from lab.swarm.loop import SMALL_ROLES, STRONG_ROLES
     models = {}
     if args.analyst_model:
-        models.update(analyst=args.analyst_model, closed_book=args.analyst_model, scout=args.analyst_model,
-                      judge=args.analyst_model, playbook=args.analyst_model)
+        models.update({r: args.analyst_model for r in SMALL_ROLES})
     if args.engineer_model:
-        models["engineer"] = args.engineer_model
+        models.update({r: args.engineer_model for r in STRONG_ROLES})
     start_memory = playbook = None
     if args.warm_from:
         warm = Path(args.warm_from)
@@ -114,7 +122,8 @@ def main(argv=None) -> int:
                       generations=args.generations or 3, proposals=args.proposals, seed=args.seed,
                       run_dir=args.run_dir, models=models or None, max_cost_usd=args.max_cost,
                       start_source=start_source, start_memory=start_memory, playbook=playbook, splits=splits,
-                      mode=args.mode, shuffle_memory=args.shuffle_memory, search_fallback=fallback)
+                      mode=args.mode, shuffle_memory=args.shuffle_memory, search_fallback=fallback,
+                      scout_queries=args.scout_queries, board_size=args.board_size)
     print(json.dumps({k: summary[k] for k in ("run_id", "status", "generations_done", "incumbent", "cost_usd")}))
     return 0
 

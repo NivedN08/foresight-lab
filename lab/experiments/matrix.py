@@ -7,7 +7,7 @@ A config (see lab/experiments/configs/ and docs/experiments.md):
     {"name": "claim1_coast", "problem": "coast_water",
      "budget": {"generations": 6, "proposals": 4, "max_cost_usd": 5},
      "seeds": [1, 2],
-     "arms": [{"name": "swarm", "mode": "swarm", "memory": "vector", "search": "openalex"}, ...]}
+     "arms": [{"name": "researcher_full", "mode": "researcher", "memory": "vector", "search": "openalex"}, ...]}
 
 Arm keys: mode, memory, search, search_fallback, models, llm, start_source (a file),
 carry (none | playbook_only | notebook_only | both | shuffled_notebook | cheat_sheet),
@@ -154,7 +154,7 @@ def plan(cfg: dict, root: Path, only: list[str] | None = None, env=None) -> list
                 "evaluator": cfg.get("evaluator", "local"),
                 "generations": int(budget["generations"]), "proposals": int(budget["proposals"]),
                 "max_cost_usd": budget.get("max_cost_usd"),
-                "mode": arm.get("mode", "swarm"), "memory": arm.get("memory", "vector"),
+                "mode": arm.get("mode", "researcher"), "memory": arm.get("memory", "vector"),
                 "search": arm.get("search", "openalex"), "search_fallback": arm.get("search_fallback"),
                 "models": arm.get("models") or cfg.get("models"),
                 "start_source": arm.get("start_source"),
@@ -282,7 +282,8 @@ def measured_rates(problem: str, roots=None) -> list[dict]:
             eng = (roles.get("engineer") or roles.get("single_agent") or {}).get("cost_usd")
             found.append({"run": str(summ.parent.relative_to(PROJECT_ROOT)) if summ.is_relative_to(PROJECT_ROOT)
                           else str(summ.parent),
-                          "status": s.get("status"), "mode": s.get("mode") or "swarm",
+                          "status": s.get("status"), "mode": {"swarm": "pipeline"}.get(s.get("mode") or "pipeline",
+                                                                       s.get("mode") or "pipeline"),
                           "proposals": n_prop, "proposals_per_generation": s.get("proposals_per_generation"),
                           "usd_per_proposal": float(s.get("cost_usd") or 0) / n_prop,
                           "engineer_usd_per_proposal": float(eng) / n_prop if eng is not None else None,
@@ -306,7 +307,7 @@ def estimate(cfg: dict, runs: list[PlannedRun], parallel: int, rates=None) -> tu
         n = sum(1 for r in runs if r.arm == arm["name"] and r.action in ("new", "resume"))
         if not n:
             continue
-        mode = arm.get("mode", "swarm")
+        mode = {"swarm": "pipeline"}.get(arm.get("mode", "researcher"), arm.get("mode", "researcher"))
         same = next((r for r in finished if r["mode"] == mode), None)
         pick = same or (finished[0] if finished else None)
         notes = []

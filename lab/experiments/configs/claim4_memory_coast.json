@@ -1,11 +1,11 @@
 {
  "name": "claim4_memory_coast",
- "comment": "Claim 4: shared memory pays. Same lab and search; only the notebook backend differs. Report accuracy (final loss), latency (minutes to target, recall latency), cost (dollars, tokens) separately, as past.dev's own method requires.",
+ "comment": "Claim 4: shared memory pays. Researcher mode, search off; only the notebook backend differs. Report accuracy (final loss), latency (minutes to target, recall latency) and cost separately, as past.dev's own method requires.",
  "problem": "coast_water",
  "budget": {
   "generations": 6,
   "proposals": 4,
-  "max_cost_usd": 5.0
+  "max_cost_usd": 4.0
  },
  "target": {
   "rule": "time to target: confirm loss at or below (1 - rel) x the starting formula's (seed's) generation-0 confirm loss",
@@ -19,40 +19,28 @@
  "arms": [
   {
    "name": "memory_none",
-   "mode": "swarm",
+   "mode": "researcher",
    "memory": "none",
-   "search": "openalex",
-   "search_fallback": [
-    "arxiv"
-   ]
+   "search": "none"
   },
   {
    "name": "memory_full_context",
-   "mode": "swarm",
+   "mode": "researcher",
    "memory": "full_context",
-   "search": "openalex",
-   "search_fallback": [
-    "arxiv"
-   ]
+   "search": "none"
   },
   {
    "name": "memory_vector",
-   "mode": "swarm",
+   "mode": "researcher",
    "memory": "vector",
-   "search": "openalex",
-   "search_fallback": [
-    "arxiv"
-   ]
+   "search": "none"
   },
   {
    "name": "memory_pastdev",
    "comment": "Requires PAST_API_KEY; skipped with a message when it is not set.",
-   "mode": "swarm",
+   "mode": "researcher",
    "memory": "pastdev",
-   "search": "openalex",
-   "search_fallback": [
-    "arxiv"
-   ],
+   "search": "none",
    "requires_env": [
     "PAST_API_KEY"
    ]

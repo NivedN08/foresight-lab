@@ -17,7 +17,7 @@ from lab.swarm import Thresholds, decide, failure_digest, run_lab, source_hash
 from lab.swarm.loop import IDENTICAL_REASON, change_comment, claim_text, normalized, parse_json
 from swarm_fakes import (BETTER, BETTER_COMMENTED, BETTER_SLOPE, BROKEN, RAISE, SEED, SEED_RENAMED, TUNABLE,
                          WORSE, CannedSearch, FakeEvalPool, ScriptedLLM, ToyProblem, compare, evaluate, fence,
-                         scout_json)
+                         researched, researched_source, scout_json)
 
 
 def events(run_dir, kind=None):
@@ -39,7 +39,7 @@ def story(toy, tmp_path_factory):
     run_dir = tmp_path_factory.mktemp("story")
     llm = ScriptedLLM({"engineer": [fence(BROKEN), fence(WORSE), fence(BETTER)], "repair": [fence(BROKEN)]})
     search = CannedSearch()
-    summary = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="vector", search=search,
+    summary = run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="vector", search=search,
                       generations=3, proposals=1, run_dir=run_dir)
     return run_dir, summary, llm, search
 
@@ -157,7 +157,7 @@ def test_playbook_written_by_model(story):
 def test_concurrent_generation_with_llm_failure(toy, tmp_path):
     llm = ScriptedLLM({"analyst": [RAISE, *(['{"hypothesis": "h", "knowledge_gap": "q"}'] * 3)],
                        "engineer": [fence(WORSE), fence(BETTER), fence(BETTER_SLOPE)]})
-    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="full_context", search="none",
+    s = run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="full_context", search="none",
                 generations=1, proposals=4, run_dir=tmp_path)
     assert s["status"] == "finished"
     failed = events(tmp_path, "proposal_failed")
@@ -186,7 +186,7 @@ def test_concurrent_generation_with_llm_failure(toy, tmp_path):
 
 def test_cost_cap_stops_run_cleanly(toy, tmp_path):
     llm = ScriptedLLM({"engineer": [fence(WORSE)]}, cost_per_call=0.01)
-    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search="none",
+    s = run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="none", search="none",
                 generations=5, proposals=1, run_dir=tmp_path, max_cost_usd=0.05)
     assert s["status"] == "stopped_cost_cap"
     assert s["generations_done"] < 5
@@ -199,12 +199,12 @@ def test_cost_cap_stops_run_cleanly(toy, tmp_path):
 
 def test_resume_does_not_redo_finished_generations(toy, tmp_path):
     llm = ScriptedLLM({"engineer": [fence(WORSE), fence(BETTER)]})
-    s1 = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="vector", search="none",
+    s1 = run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="vector", search="none",
                  generations=2, proposals=1, run_dir=tmp_path)
     assert s1["generations_done"] == 2 and s1["incumbent_hash"] == source_hash(BETTER)
     llm2 = ScriptedLLM({"engineer": [fence(WORSE)]})
     pool2 = FakeEvalPool(toy)
-    s2 = run_lab(toy, pool2, compare, llm_backend=llm2, memory="vector", search="none",
+    s2 = run_lab(toy, pool2, compare, mode="pipeline", llm_backend=llm2, memory="vector", search="none",
                  generations=3, proposals=1, run_dir=tmp_path, resume=True)
     assert s2["generations_done"] == 3 and s2["status"] == "finished"
     assert [c["generation"] for c in s2["curve"]] == [0, 1, 2, 3]
@@ -221,11 +221,11 @@ def test_resume_does_not_redo_finished_generations(toy, tmp_path):
 
 def test_warm_start_carries_findings_and_playbook(toy, tmp_path):
     cold = tmp_path / "cold"
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM({"engineer": [fence(BETTER)]}),
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=ScriptedLLM({"engineer": [fence(BETTER)]}),
             memory="vector", search="none", generations=1, proposals=1, run_dir=cold)
     llm = ScriptedLLM({"engineer": [fence(WORSE)]})
     warm = tmp_path / "warm"
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="vector", search="none",
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="vector", search="none",
             generations=1, proposals=1, run_dir=warm, start_memory=cold,
             playbook=(cold / "playbook.md").read_text())
     analyst = [c for c in llm.calls if c["role"] == "analyst"][0]["prompt"]
@@ -240,7 +240,7 @@ def test_warm_start_carries_findings_and_playbook(toy, tmp_path):
 
 def test_memory_object_can_be_injected(toy, tmp_path):
     mem = FullContextMemory(tmp_path / "shared.jsonl")
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory=mem, search="none",
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=ScriptedLLM(), memory=mem, search="none",
             generations=1, proposals=2, run_dir=tmp_path / "run")
     assert len(read_jsonl(tmp_path / "shared.jsonl")) >= 2
 
@@ -285,7 +285,7 @@ def test_parse_json():
 
 def test_incumbent_that_fails_raises(toy, tmp_path):
     with pytest.raises(RuntimeError, match="incumbent failed"):
-        run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory="none", search="none",
+        run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=ScriptedLLM(), memory="none", search="none",
                 generations=1, proposals=1, run_dir=tmp_path, start_source=BROKEN)
     assert json.loads((tmp_path / "summary.json").read_text())["status"] == "failed"
 
@@ -304,7 +304,7 @@ def test_evaluator_contract_fake_matches(toy):
 
 def test_identical_code_in_one_generation_is_marked_duplicate(toy, tmp_path):
     llm = ScriptedLLM({"engineer": [fence(BETTER), fence(BETTER)]})
-    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search="none",
+    s = run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="none", search="none",
                 generations=1, proposals=2, run_dir=tmp_path)
     f0, f1 = sorted(read_jsonl(tmp_path / "findings.jsonl"), key=lambda f: f.duplicate_of is not None)
     assert f0.accepted and f1.accepted and f0.select_delta == f1.select_delta
@@ -319,7 +319,7 @@ def test_identical_predictions_count_as_duplicate(toy, tmp_path):
         "self.coef = ", "coef = ").replace("[0]\n", "[0]\n        self.coef = coef\n", 1)
     assert renamed != BETTER and source_hash(renamed) != source_hash(BETTER)
     llm = ScriptedLLM({"engineer": [fence(BETTER), fence(renamed)]})
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search="none",
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="none", search="none",
             generations=1, proposals=2, run_dir=tmp_path)
     fs = read_jsonl(tmp_path / "findings.jsonl")
     dup = [f for f in fs if f.duplicate_of]
@@ -329,7 +329,7 @@ def test_identical_predictions_count_as_duplicate(toy, tmp_path):
 def test_candidate_identical_to_incumbent_is_rejected_without_evaluation(toy, tmp_path):
     pool = FakeEvalPool(toy)
     llm = ScriptedLLM({"engineer": [fence(SEED_RENAMED)]})
-    run_lab(toy, pool, compare, llm_backend=llm, memory="none", search="none", generations=1, proposals=1,
+    run_lab(toy, pool, compare, mode="pipeline", llm_backend=llm, memory="none", search="none", generations=1, proposals=1,
             run_dir=tmp_path)
     assert pool.submitted == [SEED]                       # only the incumbent was evaluated
     d = events(tmp_path, "decision")[0]
@@ -356,7 +356,7 @@ def test_change_comment_and_claim_text():
 
 def test_engineer_records_change_comment(toy, tmp_path):
     llm = ScriptedLLM({"engineer": [fence(BETTER_COMMENTED)]})
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search="none",
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="none", search="none",
             generations=1, proposals=1, run_dir=tmp_path)
     assert events(tmp_path, "decision")[0]["change_comment"] == "fit a least-squares line in x"
     p = [c for c in llm.calls if c["role"] == "engineer"][0]["prompt"]
@@ -368,7 +368,7 @@ def test_engineer_records_change_comment(toy, tmp_path):
 
 def test_scout_unrelated_hit_falls_back_to_closed_book(toy, tmp_path):
     llm = ScriptedLLM({"scout": [scout_json("unrelated")]})
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search=CannedSearch(),
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="none", search=CannedSearch(),
             generations=1, proposals=1, run_dir=tmp_path)
     f = read_jsonl(tmp_path / "findings.jsonl")[0]
     assert f.origin == "closed_book" and f.source_relevance is None and f.search_backend is None
@@ -380,7 +380,7 @@ def test_scout_unrelated_hit_falls_back_to_closed_book(toy, tmp_path):
 
 def test_scout_method_hit_is_used_and_recorded(toy, tmp_path):
     llm = ScriptedLLM({"scout": [scout_json("method")]})
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search=CannedSearch(),
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="none", search=CannedSearch(),
             generations=1, proposals=1, run_dir=tmp_path)
     f = read_jsonl(tmp_path / "findings.jsonl")[0]
     assert f.origin == "search" and f.source_relevance == "method"
@@ -388,7 +388,7 @@ def test_scout_method_hit_is_used_and_recorded(toy, tmp_path):
 
 def test_scout_with_no_chosen_hit_falls_back(toy, tmp_path):
     llm = ScriptedLLM({"scout": [scout_json("domain", chosen=None)]})
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search=CannedSearch(),
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=llm, memory="none", search=CannedSearch(),
             generations=1, proposals=1, run_dir=tmp_path)
     assert read_jsonl(tmp_path / "findings.jsonl")[0].origin == "closed_book"
 
@@ -399,7 +399,7 @@ def test_rate_limited_search_falls_back_and_is_recorded(toy, tmp_path):
     slept = []
     openalex = OpenAlexSearch(transport=httpx.MockTransport(limited), cache_dir=None, sleep=slept.append)
     chain = ChainSearch([openalex, CannedSearch()])
-    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory="none", search=chain,
+    s = run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=ScriptedLLM(), memory="none", search=chain,
                 generations=1, proposals=1, run_dir=tmp_path)
     assert slept == [14.0, 14.0]
     f = read_jsonl(tmp_path / "findings.jsonl")[0]
@@ -475,7 +475,7 @@ def test_shuffle_memory_permutes_imported_outcomes(toy, tmp_path):
             memory="vector", search="none", generations=3, proposals=1, run_dir=cold)
     original = {f.id: f for f in read_jsonl(cold / "findings.jsonl")}
     warm = tmp_path / "warm"
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory="vector", search="none",
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=ScriptedLLM(), memory="vector", search="none",
             generations=1, proposals=1, run_dir=warm, start_memory=cold, shuffle_memory=True, seed=5)
     cfg = json.loads((warm / "config.json").read_text())
     assert cfg["shuffle_memory"] is True
@@ -491,7 +491,7 @@ def test_shuffle_memory_permutes_imported_outcomes(toy, tmp_path):
         assert f.text == f.render()                           # text rebuilt from the shuffled fields
     # the unshuffled warm run imports the outcomes untouched
     plain = tmp_path / "plain"
-    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory="vector", search="none",
+    run_lab(toy, FakeEvalPool(toy), compare, mode="pipeline", llm_backend=ScriptedLLM(), memory="vector", search="none",
             generations=1, proposals=1, run_dir=plain, start_memory=cold)
     for f in read_jsonl(plain / "memory.jsonl"):
         if f.id in original:
@@ -532,12 +532,13 @@ def test_runs_index_lists_and_details(lab_root):
     assert len(rows) == 1
     r = rows[0]
     assert r["problem"] == "toy_line" and r["status"] == "finished" and r["generations_done"] == 1
-    assert r["mode"] == "swarm" and r["incumbent_select"] < r["incumbent_confirm"] + 10 and r["cost_usd"] == 0.0
+    assert r["mode"] == "researcher" and r["incumbent_select"] < r["incumbent_confirm"] + 10 and r["cost_usd"] == 0.0
+    assert r["loss_name"] == "absolute error, units of y" and r["baseline_select"] > r["incumbent_select"]
     assert r["started_at"] and r["updated_at"] and r["became_incumbent_total"] == 1
     d = run_detail(lab_root, "toy_line", r["run_id"])
     assert d["summary"]["run_id"] == r["run_id"] and d["config"]["problem"] == "toy_line"
     assert len(d["findings"]) == 1 and d["findings"][0]["became_incumbent"] is True
-    assert d["incumbent_source"] == BETTER
+    assert d["incumbent_source"] == researched_source(BETTER)
     assert run_detail(lab_root, "toy_line", "nope") is None
     assert run_detail(lab_root, "..", r["run_id"]) is None and run_detail(lab_root, "toy_line", "../x") is None
     assert list_runs(lab_root / "missing") == []
@@ -550,7 +551,7 @@ def test_runs_index_tolerates_files_mid_write(lab_root):
         fh.write('{"claim": "half a li')                    # a line still being written
     (run_dir / "summary.json").write_text('{"run_id": "x", "stat')
     row = list_runs(lab_root)[0]
-    assert row["status"] == "unreadable" and row["mode"] == "swarm" and row["generations_planned"] == 1
+    assert row["status"] == "unreadable" and row["mode"] == "researcher" and row["generations_planned"] == 1
     d = run_detail(lab_root, "toy_line", run_dir.name)
     assert d["summary"] is None and d["summary_readable"] is False and len(d["findings"]) == 1
     (lab_root / "toy_line" / "fresh-run").mkdir()
@@ -572,6 +573,154 @@ def test_server_lab_endpoints(lab_root, monkeypatch):
     d = client.get(f"/api/lab/runs/toy_line/{runs[0]['run_id']}")
     assert d.status_code == 200
     body = d.json()
-    assert body["summary"]["status"] == "finished" and body["incumbent_source"] == BETTER
+    assert body["summary"]["status"] == "finished" and body["incumbent_source"] == researched_source(BETTER)
     assert len(body["findings"]) == 1
     assert client.get("/api/lab/runs/toy_line/missing").status_code == 404
+
+
+# ----------------------------------------------------------------- researcher mode
+
+from lab.swarm.loop import parse_header, parse_idea_source  # noqa: E402
+
+
+def test_header_parsing_each_origin():
+    src = "# Change: add x\n# Idea source: own\n# Why: because\nimport numpy as np\n"
+    assert parse_header(src) == {"change": "add x", "source": "own", "why": "because"}
+    assert parse_header("import numpy\n# Change: late\n")["change"] is None      # only leading comments count
+    assert parse_header(None) == {"change": None, "source": None, "why": None}
+    nb, bd = ["abc123"], ["g1i1"]
+    assert parse_idea_source("own", nb, bd) == ("own", None)
+    assert parse_idea_source("notebook:abc123", nb, bd) == ("notebook", "abc123")
+    assert parse_idea_source("notebook: [abc123]", nb, bd) == ("notebook", "abc123")
+    assert parse_idea_source("search:g1i1", nb, bd) == ("search", "g1i1")
+    assert parse_idea_source("search:g9i9", nb, bd) == ("unstated", "g9i9")         # id not on the board
+    assert parse_idea_source("notebook:zzz", nb, bd) == ("unstated", "zzz")
+    assert parse_idea_source("a paper I read", nb, bd) == ("unstated", None)
+    assert parse_idea_source(None, nb, bd) == ("unstated", None)
+
+
+def test_researcher_plain_has_no_notebook_or_board(toy, tmp_path):
+    llm = ScriptedLLM()
+    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search="none",
+                generations=2, proposals=1, run_dir=tmp_path)
+    assert s["mode"] == "researcher" and set(llm.roles) == {"researcher", "playbook"}
+    p = [c for c in llm.calls if c["role"] == "researcher"][0]["prompt"]
+    assert "# Lab notebook" not in p and "# Ideas board" not in p
+    assert "a suggestion, not an order" in p and "# Idea source:" in p and "Breakdown by_lead" in p
+    f = read_jsonl(tmp_path / "findings.jsonl")[0]
+    assert f.origin == "own" and f.claim == "fit a least-squares line in x. Why: y is linear in x at all leads."
+    assert f.became_incumbent is True
+    assert s["by_origin"]["own"] == {"proposals": 2, "passed": 1, "adopted": 1}
+    assert s["board"]["offered"] == 0 and s["loss_name"] == toy.loss_name
+    assert s["baseline_incumbent"]["select"] == s["curve"][0]["select"]
+    assert json.loads((tmp_path / "config.json").read_text())["loss_name"] == toy.loss_name
+
+
+def test_researcher_with_board_and_notebook(toy, tmp_path):
+    llm = ScriptedLLM({"researcher": [researched(BETTER, source="search:g1i2", change="robust line fit")]})
+    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="vector", search=CannedSearch(),
+                generations=1, proposals=1, run_dir=tmp_path, board_size=2)
+    assert json.loads((tmp_path / "config.json").read_text())["board_size"] == 2
+    for role in ("anticipate", "scout_queries", "scout_board", "board_judge"):
+        assert llm.roles.count(role) == 1 and role in s["llm_by_role"]        # once per generation, own roles
+    assert llm.roles.index("anticipate") < llm.roles.index("scout_board")     # closed-book list before the board
+    board = events(tmp_path, "board")[0]
+    assert [i["id"] for i in board["ideas"]] == ["g1i1", "g1i2"]               # the unrelated idea was dropped
+    assert [i["known_closed_book"] for i in board["ideas"]] == [True, False]
+    assert {i["search_backend"] for i in board["ideas"]} == {"canned"}
+    p = [c for c in llm.calls if c["role"] == "researcher"][0]["prompt"]
+    assert "# Ideas board" in p and "[g1i1] fit y as a least-squares line in x" in p and "# Lab notebook" in p
+    assert "may implement one board idea, adapt one, or ignore the board" in p
+    assert "Do not repeat a change that was tested and rejected" in p
+    assert "known_closed_book" not in p and "Unrelated" not in p
+    f = read_jsonl(tmp_path / "findings.jsonl")[0]
+    assert f.origin == "search" and f.idea_ref == "g1i2" and f.source_title == "Robust statistics"
+    assert f.source_relevance == "method" and f.known_closed_book is False and f.search_backend == "canned"
+    assert s["board"] == {"offered": 2, "used": 1, "used_passed": 1, "used_adopted": 1,
+                          "passed_not_known_closed_book": 1}
+    assert s["by_origin"] == {"search": {"proposals": 1, "passed": 1, "adopted": 1}}
+
+
+class NotebookCiter(ScriptedLLM):
+    """A researcher that cites the first notebook id shown in its prompt, if any."""
+
+    def complete(self, prompt, **kw):
+        import re as _re
+        if self.role_of(prompt) == "researcher":
+            m = _re.search(r"^- \[([0-9a-f]{16})\]", prompt, _re.M)
+            src = BETTER_SLOPE if m else WORSE
+            self.queues["researcher"] = [researched(src, source=f"notebook:{m.group(1)}" if m else "own")]
+        return super().complete(prompt, **kw)
+
+
+def test_researcher_notebook_origin_and_unstated(toy, tmp_path):
+    llm = NotebookCiter()
+    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="vector", search="none",
+                generations=2, proposals=1, run_dir=tmp_path)
+    f1, f2 = sorted(read_jsonl(tmp_path / "findings.jsonl"), key=lambda f: f.generation)
+    assert f1.origin == "own" and f2.origin == "notebook" and f2.idea_ref == f1.id
+    assert s["by_origin"]["notebook"]["proposals"] == 1
+    # unknown board id and a missing header both give "unstated"
+    llm2 = ScriptedLLM({"researcher": [researched(BETTER, source="search:g7i7"), fence(BETTER_SLOPE)]})
+    s2 = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm2, memory="none", search="none",
+                 generations=2, proposals=1, run_dir=tmp_path / "u")
+    assert [f.origin for f in read_jsonl(tmp_path / "u" / "findings.jsonl")] == ["unstated", "unstated"]
+    ev = events(tmp_path / "u", "origin_unstated")
+    assert len(ev) == 2 and ev[0]["named"] == "g7i7" and ev[1]["header"]["change"] is None
+    assert s2["by_origin"]["unstated"]["proposals"] == 2
+    assert read_jsonl(tmp_path / "u" / "findings.jsonl")[1].claim.startswith("researcher change (no")
+
+
+def test_researcher_repair_keeps_header(toy, tmp_path):
+    llm = ScriptedLLM({"researcher": [researched(BROKEN), researched(BETTER)]})
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search="none",
+            generations=1, proposals=1, run_dir=tmp_path)
+    repair = [c for c in llm.calls if "This candidate failed." in c["prompt"]][0]["prompt"]
+    assert "Keep the comment lines at the top of the file" in repair
+    assert read_jsonl(tmp_path / "findings.jsonl")[0].accepted
+
+
+# ----------------------------------------------------------------- no confirm-window numbers reach an agent
+
+
+def _confirm_forms(d: float) -> set[str]:
+    forms = {f"{d:+.4g}", f"{d:+.4f}", f"{d:+.3f}", repr(d)}
+    if d < 0:
+        forms |= {f"{d:.4g}", f"{d:.4f}", f"{d:.3f}"}
+    return forms
+
+
+OLD_STYLE = {"claim": "Add a pressure term.", "problem": "toy_line", "generation": 1, "id": "0123456789abcdef",
+             "time": "2026-01-02T00:00:00Z", "origin": "search", "accepted": True, "select_delta": -0.41,
+             "select_low": -0.6, "select_high": -0.2, "confirm_delta": -0.987654,
+             "text": "[ACCEPTED] toy_line gen 1: Add a pressure term. Select delta -0.41; confirm delta -0.9877."}
+
+
+@pytest.mark.parametrize("mode,search", [("researcher", "canned"), ("pipeline", "canned"), ("single_agent", "none")])
+def test_no_prompt_carries_a_confirm_delta(toy, tmp_path, mode, search):
+    warm = tmp_path / "warm.jsonl"
+    warm.write_text(json.dumps(OLD_STYLE) + "\n")
+    llm = ScriptedLLM({"engineer": [fence(WORSE), fence(BETTER)], "researcher": [researched(WORSE), researched(BETTER)],
+                       "single_agent": [fence(WORSE), fence(BETTER)]})
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="full_context",
+            search=CannedSearch() if search == "canned" else "none", generations=3, proposals=1,
+            run_dir=tmp_path / "run", mode=mode, start_memory=warm, playbook="Earlier advice.")
+    findings = read_jsonl(tmp_path / "run" / "memory.jsonl")
+    deltas = [f.confirm_delta for f in findings if f.confirm_delta is not None]
+    assert len(deltas) >= 3                                       # imported + this run's measured ones
+    prompts = "\n".join(c["prompt"] + (c["system"] or "") for c in llm.calls)
+    assert "playbook" in llm.roles or mode == "single_agent"
+    for d in deltas:
+        for form in _confirm_forms(d):
+            assert form not in prompts, (mode, d, form)
+    assert "confirm delta" not in prompts.lower()
+    if mode != "single_agent":
+        assert "later-window check" in prompts                    # the guard shows up in words
+    # the stored record keeps the numbers
+    assert any(f.confirm_delta == -0.987654 for f in findings)
+
+
+def test_board_size_defaults_to_proposals(toy, tmp_path):
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory="none", search=CannedSearch(),
+            generations=1, proposals=1, run_dir=tmp_path)
+    assert len(events(tmp_path, "board")[0]["ideas"]) == 1

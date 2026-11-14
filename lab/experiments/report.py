@@ -224,6 +224,42 @@ def search_table(runs: list[dict]) -> list[dict]:
     return out
 
 
+def origin_table(runs: list[dict]) -> list[dict]:
+    """Per arm and origin of the idea: proposals, passed (accepted) and adopted (became incumbent).
+    Computed from findings, so runs from every mode and format can be read; "adopted" is None
+    when an arm's findings predate `became_incumbent`."""
+    out = []
+    for arm in dict.fromkeys(r["arm"] for r in runs):
+        rs = [r for r in runs if r["arm"] == arm]
+        fin = [r for r in rs if is_finished(r)] or rs
+        rows = [f for r in fin for f in real_findings(r["findings"])]
+        old = any("became_incumbent" not in f for f in rows)
+        for origin in dict.fromkeys(str(f.get("origin") or "unstated") for f in rows):
+            fs = [f for f in rows if str(f.get("origin") or "unstated") == origin]
+            out.append({"arm": arm, "origin": origin, "seeds": len(fin), "proposals": len(fs),
+                        "passed": sum(1 for f in fs if f.get("accepted")),
+                        "adopted": None if old else sum(1 for f in fs if f.get("became_incumbent"))})
+    return out
+
+
+def board_table(runs: list[dict]) -> list[dict]:
+    """Researcher arms with search: ideas offered on the board, used (origin search), passed,
+    adopted, and the share of passed search-origin changes not known closed-book."""
+    out = []
+    for arm in dict.fromkeys(r["arm"] for r in runs):
+        rs = [r for r in runs if r["arm"] == arm]
+        fin = [r for r in rs if is_finished(r)] or rs
+        boards = [r["summary"].get("board") for r in fin]
+        if not any(isinstance(b, dict) and b.get("offered") for b in boards):
+            continue
+        tot = {k: sum(int((b or {}).get(k) or 0) for b in boards)
+               for k in ("offered", "used", "used_passed", "used_adopted", "passed_not_known_closed_book")}
+        out.append({"arm": arm, "seeds": len(fin), **tot,
+                    "share_passed_not_known": (tot["passed_not_known_closed_book"] / tot["used_passed"])
+                    if tot["used_passed"] else None})
+    return out
+
+
 def memory_table(runs: list[dict]) -> list[dict]:
     out = []
     for arm in dict.fromkeys(r["arm"] for r in runs):
@@ -407,6 +443,7 @@ def build(root, name: str, target: float | None = None, compare: tuple[str, str]
             "skipped": [{k: r.get(k) for k in ("arm", "seed", "status", "message")} for r in skipped],
             "arms": arms, "target": target, "target_rel": rel, "target_note": target_note,
             "seed_confirm": sc, "time_to_target": ttt, "equal_dollars": eq,
+            "origins": origin_table(runs), "board": board_table(runs),
             "search": search_table(runs), "search_cost": search_cost_table(runs),
             "memory": memory_table(runs), "paired": pair}
 
@@ -486,6 +523,22 @@ def render(rep: dict) -> str:
                          _fmt(statistics.median([t['minutes'] for t in reached]) if reached else None, 1)])
         L += [_table(["arm", "seed", "status", "reached", "proposals", "$", "minutes"], rows),
               "", "Summary rows give medians over the runs that reached the target.", ""]
+
+    if rep.get("origins"):
+        L += ["## Where the ideas came from", "",
+              "By the origin each finding records: own, notebook or search (researcher mode, from the file's "
+              "`# Idea source:` line; unstated when missing or naming an id that was not shown), search or "
+              "closed_book (pipeline mode), single_agent, random_mutation. Passed = accepted by the decision "
+              "rule; adopted = became the incumbent.", ""]
+        rows = [[o["arm"], o["origin"], o["seeds"], o["proposals"], o["passed"], _fmt(o["adopted"])]
+                for o in rep["origins"]]
+        L += [_table(["arm", "origin", "seeds", "proposals", "passed", "adopted"], rows), ""]
+    if rep.get("board"):
+        L += ["Ideas board (researcher arms with search):", ""]
+        rows = [[b["arm"], b["seeds"], b["offered"], b["used"], b["used_passed"], b["used_adopted"],
+                 _fmt(b["share_passed_not_known"], 2)] for b in rep["board"]]
+        L += [_table(["arm", "seeds", "ideas offered", "used", "passed", "adopted",
+                      "share of passed search changes not known closed-book"], rows), ""]
 
     L += ["## Search", ""]
     if rep["search"]:

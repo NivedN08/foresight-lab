@@ -1,10 +1,13 @@
 """The research loop: generations of concurrent proposals against one incumbent.
 
-See docs/swarm.md. In the default "swarm" mode one proposal is: failure digest
--> analyst -> closed-book -> scout (search) -> engineer (+ one repair) ->
-evaluate -> compare -> decide (code). Two baselines share everything from
-"evaluate" on: "single_agent" (one model call writes the candidate) and
-"random_mutation" (no model: constants perturbed or one term dropped).
+See docs/swarm.md. Modes (all share everything from "evaluate" on):
+  researcher (default): one strong call per proposal chooses its own change; it
+      may use or ignore the notebook (memory) and an ideas board scouted from
+      search once per generation, and names its idea's source in a header.
+  pipeline: failure digest -> analyst -> closed-book -> scout (search) ->
+      engineer (+ one repair). The first design; kept as a documented negative
+      result. "swarm" is accepted as its old name.
+  single_agent: one model call writes the candidate. random_mutation: no model.
 
 At the end of a generation the best accepted proposal becomes the incumbent,
 then every proposal's finding is written once, saying whether it became the
@@ -39,8 +42,13 @@ from lab.swarm.mutate import mutate
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODELS = {"analyst": "haiku", "closed_book": "haiku", "scout": "haiku", "judge": "haiku",
-                  "engineer": "sonnet", "single_agent": "sonnet", "playbook": "haiku"}
-MODES = ("swarm", "single_agent", "random_mutation")
+                  "engineer": "sonnet", "single_agent": "sonnet", "playbook": "haiku",
+                  "researcher": "sonnet", "anticipate": "sonnet", "scout_queries": "haiku",
+                  "scout_board": "haiku", "board_judge": "haiku"}
+MODES = ("researcher", "pipeline", "single_agent", "random_mutation")
+MODE_ALIASES = {"swarm": "pipeline"}          # the pipeline's name before the researcher mode existed
+STRONG_ROLES = ("engineer", "single_agent", "researcher", "anticipate")
+SMALL_ROLES = ("analyst", "closed_book", "scout", "judge", "playbook", "scout_queries", "scout_board", "board_judge")
 RELEVANCE = ("domain", "method", "unrelated")
 MAX_LOGGED_REPLY = 20_000
 IDENTICAL_REASON = "rejected: candidate is identical to the incumbent (ignoring whitespace, comments and `name`)"
@@ -143,6 +151,43 @@ def change_comment(source: str | None) -> str | None:
     return None
 
 
+def parse_header(source: str | None) -> dict:
+    """The researcher's three header lines: '# Change:', '# Idea source:', '# Why:' (any order,
+    among the leading comment lines). Missing lines are None."""
+    out = {"change": None, "source": None, "why": None}
+    if not source:
+        return out
+    for line in source.splitlines():
+        t = line.strip()
+        if not t:
+            continue
+        if not t.startswith("#"):
+            break
+        m = re.match(r"#\s*(change|idea\s*source|why)\s*:\s*(.*)", t, re.I)
+        if m:
+            key = "source" if m.group(1).lower().startswith("idea") else m.group(1).lower()
+            out[key] = m.group(2).strip() or None
+    return out
+
+
+def parse_idea_source(text: str | None, notebook_ids, board_ids) -> tuple[str, str | None]:
+    """('own' | 'notebook' | 'search' | 'unstated', the id named). A missing line, an unknown
+    kind or an id that was not shown in this prompt gives 'unstated'."""
+    if not text:
+        return "unstated", None
+    m = re.match(r"\s*(own|notebook|search)\s*(?::\s*\[?([A-Za-z0-9_.-]+)\]?)?", text, re.I)
+    if not m:
+        return "unstated", None
+    kind, ref = m.group(1).lower(), m.group(2)
+    if kind == "own":
+        return "own", None
+    if kind == "notebook" and ref in set(notebook_ids):
+        return "notebook", ref
+    if kind == "search" and ref in set(board_ids):
+        return "search", ref
+    return "unstated", ref
+
+
 def claim_text(claim: dict) -> str:
     def g(k):
         return str(claim.get(k) or "").strip().rstrip(".")
@@ -191,8 +236,9 @@ class Lab:
     def __init__(self, problem, evaluator, compare: Callable, *, llm_backend, memory, search,
                  generations: int, proposals: int, seed: int, run_dir, models, max_cost_usd,
                  start_source, start_memory, playbook, resume: bool, splits, thresholds: Thresholds,
-                 search_k: int, recall_k: int, runs_root, mode: str = "swarm", shuffle_memory: bool = False,
-                 search_fallback=None):
+                 search_k: int, recall_k: int, runs_root, mode: str = "researcher", shuffle_memory: bool = False,
+                 search_fallback=None, scout_queries: int = 3, board_size: int | None = None):
+        mode = MODE_ALIASES.get(mode, mode)
         if mode not in MODES:
             raise ValueError(f"unknown mode {mode!r}; choose from {MODES}")
         self.problem = problem
@@ -200,6 +246,8 @@ class Lab:
         self.compare = compare
         self.mode = mode
         self.shuffle_memory = bool(shuffle_memory)
+        self.scout_queries = int(scout_queries)
+        self.board_size = int(board_size) if board_size else int(proposals)
         self.generations = int(generations)
         self.proposals = int(proposals)
         self.seed = int(seed)
@@ -233,7 +281,8 @@ class Lab:
 
         self.memory = memory if not isinstance(memory, str) else get_memory(memory, path=self.run_dir / "memory.jsonl")
         self.memory_name = getattr(self.memory, "name", type(self.memory).__name__)
-        if mode != "swarm":
+        self.memory_on = self.memory_name != "none"
+        if mode in ("single_agent", "random_mutation"):
             search = "none"           # the baselines never search
         self.searcher = search if not isinstance(search, str) else get_search(search, fallback=search_fallback)
         self.search_name = getattr(self.searcher, "name", type(self.searcher).__name__)
@@ -251,6 +300,7 @@ class Lab:
         self.wall_offset = float(self.prev.get("wall_s") or 0.0)
         self.evaluations = 0
         self.recall_stats = {"calls": 0, "latency_s": 0.0, "chars": 0}
+        self.board_offered = int((self.prev.get("board") or {}).get("offered") or 0)
         self.t0 = time.monotonic()
         self.started_at = self.prev.get("started_at") or to_iso(utcnow())
         self.status = "running"
@@ -293,7 +343,7 @@ class Lab:
         try:
             r = complete(prompt, system=system, model=self.models.get(role), backend=self.backend,
                          budget=self.budget, label=role,
-                         max_tokens=8000 if role in ("engineer", "single_agent") else 2000)
+                         max_tokens=8000 if role in ("engineer", "single_agent", "researcher") else 2000)
         except Exception as e:
             self.event("llm_error", role=role, error=f"{type(e).__name__}: {e}", **ctx,
                        duration_s=time.monotonic() - t0)
@@ -323,7 +373,20 @@ class Lab:
 
     def counts(self) -> dict:
         fs = read_jsonl(self.run_dir / "findings.jsonl")
-        return {"findings_total": len(fs),
+        by_origin: dict[str, dict] = {}
+        for f in fs:
+            if f.supersedes:
+                continue
+            row = by_origin.setdefault(f.origin or "unstated", {"proposals": 0, "passed": 0, "adopted": 0})
+            row["proposals"] += 1
+            row["passed"] += int(bool(f.accepted))
+            row["adopted"] += int(bool(f.became_incumbent))
+        used = [f for f in fs if self.mode == "researcher" and f.origin == "search"]
+        passed = [f for f in used if f.accepted]
+        board = {"offered": self.board_offered, "used": len(used), "used_passed": len(passed),
+                 "used_adopted": sum(1 for f in used if f.became_incumbent),
+                 "passed_not_known_closed_book": sum(1 for f in passed if f.known_closed_book is False)}
+        return {"by_origin": by_origin, "board": board, "findings_total": len(fs),
                 "accepted_total": sum(1 for f in fs if f.accepted and not f.supersedes),
                 "became_incumbent_total": sum(1 for f in fs if f.became_incumbent),
                 "duplicates_total": sum(1 for f in fs if f.duplicate_of),
@@ -335,6 +398,9 @@ class Lab:
         snap = self.budget.snapshot()
         summary = {
             "run_id": self.run_id, "problem": self.problem.name, "mode": self.mode, "status": self.status,
+            "loss_name": getattr(self.problem, "loss_name", None),
+            "baseline_incumbent": {"select": (curve[0] if curve else {}).get("select"),
+                                   "confirm": (curve[0] if curve else {}).get("confirm")},
             "started_at": self.started_at, "updated_at": to_iso(utcnow()),
             "generations_planned": self.generations, "generations_done": done,
             "proposals_per_generation": self.proposals,
@@ -370,21 +436,19 @@ class Lab:
 
     # ------------------------------------------------------------------ proposals
 
-    def proposal(self, gen, idx, incumbent_src, incumbent_res, digest, worst) -> dict:
+    def proposal(self, gen, idx, incumbent_src, incumbent_res, digest, worst, board=None) -> dict:
         if self.mode == "single_agent":
             return self._proposal_single(gen, idx, incumbent_src, incumbent_res, digest)
         if self.mode == "random_mutation":
             return self._proposal_mutation(gen, idx, incumbent_src, incumbent_res)
-        return self._proposal_swarm(gen, idx, incumbent_src, incumbent_res, digest, worst)
+        if self.mode == "researcher":
+            return self._proposal_researcher(gen, idx, incumbent_src, incumbent_res, digest, worst, board or [])
+        return self._proposal_pipeline(gen, idx, incumbent_src, incumbent_res, digest, worst)
 
-    def _proposal_swarm(self, gen, idx, incumbent_src, incumbent_res, digest, worst) -> dict:
-        ctx = {"generation": gen, "proposal": idx}
-        strategy = self.strategies[((gen - 1) * self.proposals + idx) % len(self.strategies)]
-        out: dict[str, Any] = {"generation": gen, "proposal": idx, "strategy": strategy}
-        describe = self.problem.describe()
+    def _strategy(self, gen: int, idx: int) -> str:
+        return self.strategies[((gen - 1) * self.proposals + idx) % len(self.strategies)]
 
-        # b. recall + analyst
-        query = f"{strategy} {self.problem.title} " + " ".join(worst)
+    def _recall(self, query: str, ctx: dict):
         rec = self.memory.recall(query, k=self.recall_k)
         with self._lock:
             self.recall_stats["calls"] += 1
@@ -392,6 +456,145 @@ class Lab:
             self.recall_stats["chars"] += rec.chars
         self.event("recall", query=query, n=len(rec.findings), ids=[f.id for f in rec.findings],
                    chars=rec.chars, latency_s=rec.latency_s, **ctx)
+        return rec
+
+    # ---------------------------------------------------------------- researcher
+
+    def scout_board(self, gen: int, incumbent_src: str, digest: str) -> list[dict]:
+        """Once per generation (search on): the strong model's closed-book list of next changes,
+        search queries from a small model, the hits distilled into an ideas board, and a
+        judge marking each idea as already on the closed-book list or not."""
+        ctx = {"generation": gen, "stage": "board"}
+        describe = self.problem.describe()
+        sys_, p = prompts.anticipate(describe, incumbent_src, digest)
+        anticipated = [str(c) for c in ((parse_json(self.llm("anticipate", sys_, p, ctx)) or {}).get("changes") or [])
+                       if str(c).strip()]
+        short = f"Target: {self.problem.target_key}. Loss: {self.problem.loss_name}."
+        sys_, p = prompts.scout_queries(self.problem.title, short, incumbent_src[:2500], digest, self.scout_queries)
+        queries = [str(q).strip() for q in ((parse_json(self.llm("scout_queries", sys_, p, ctx)) or {})
+                                            .get("queries") or []) if str(q).strip()][: self.scout_queries]
+        hits, seen = [], set()
+        for q in queries:
+            failures, backend, n = [], None, 0
+            try:
+                if hasattr(self.searcher, "search_detailed"):
+                    o = self.searcher.search_detailed(q, k=self.search_k)
+                    found, backend, failures = o.hits, o.backend, o.failures
+                else:
+                    found = self.searcher.search(q, k=self.search_k)
+                    backend = getattr(self.searcher, "name", None) if found else None
+            except Exception as e:
+                found, failures = [], [{"backend": self.search_name, "error": f"{type(e).__name__}: {e}"}]
+            for fl in failures:
+                self.event("search_error", query=q, backend=fl.get("backend"), error=fl.get("error"), **ctx)
+            for h in found:
+                if h.url not in seen:
+                    seen.add(h.url)
+                    if not getattr(h, "backend", None):
+                        h.backend = backend or ""
+                    hits.append(h)
+                    n += 1
+            self.event("search", query=q, n=len(found), new=n, search_backend=backend, failures=failures,
+                       hits=[{"title": h.title, "url": h.url, "year": h.year} for h in found], **ctx)
+        hits = hits[:12]
+        board: list[dict] = []
+        if hits:
+            sys_, p = prompts.scout_board(self.problem.title, describe, [h.to_dict() for h in hits], self.board_size)
+            raw = (parse_json(self.llm("scout_board", sys_, p, ctx)) or {}).get("ideas") or []
+            for item in raw:
+                if not isinstance(item, dict) or not str(item.get("change") or "").strip():
+                    continue
+                rel = str(item.get("source_relevance") or "").strip().lower()
+                if rel == "unrelated":
+                    continue
+                hit = None
+                try:
+                    hit = hits[int(item.get("hit")) - 1]
+                except (TypeError, ValueError, IndexError):
+                    hit = next((h for h in hits if h.url == item.get("source_url")), None)
+                board.append({"id": f"g{gen}i{len(board) + 1}", "change": str(item["change"]).strip(),
+                              "why": str(item.get("why") or "").strip(), "leads": str(item.get("leads") or "").strip(),
+                              "source_title": str(item.get("source_title") or (hit.title if hit else "")),
+                              "source_url": str(item.get("source_url") or (hit.url if hit else "")),
+                              "source_relevance": rel if rel in RELEVANCE else None,
+                              "search_backend": getattr(hit, "backend", None) if hit else None,
+                              "known_closed_book": None})
+                if len(board) >= self.board_size:
+                    break
+        if board:
+            sys_, p = prompts.board_judge(board, anticipated)
+            known = (parse_json(self.llm("board_judge", sys_, p, ctx)) or {}).get("known") or {}
+            for idea in board:
+                k = known.get(idea["id"]) if isinstance(known, dict) else None
+                idea["known_closed_book"] = k if isinstance(k, bool) else None
+        with self._lock:
+            self.board_offered += len(board)
+        self.event("board", generation=gen, queries=queries, hits=len(hits), anticipated=anticipated, ideas=board)
+        return board
+
+    @staticmethod
+    def board_text(board: list[dict]) -> str:
+        lines = []
+        for i in board:
+            line = f"- [{i['id']}] {i['change']}"
+            if i.get("why"):
+                line += f" Why: {i['why']}"
+            if i.get("leads"):
+                line += f" Leads: {i['leads']}"
+            src = " ".join(x for x in (i.get("source_title"), i.get("source_url")) if x)
+            if src:
+                line += f" Source: {src}" + (f" ({i['source_relevance']})" if i.get("source_relevance") else "")
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _proposal_researcher(self, gen, idx, incumbent_src, incumbent_res, digest, worst, board) -> dict:
+        ctx = {"generation": gen, "proposal": idx}
+        strategy = self._strategy(gen, idx)
+        out: dict[str, Any] = {"generation": gen, "proposal": idx, "strategy": strategy}
+        notebook, notebook_ids = None, []
+        if self.memory_on:
+            rec = self._recall(f"{strategy} {self.problem.title} " + " ".join(worst), ctx)
+            notebook_ids = [f.id for f in rec.findings]
+            notebook = "\n".join(f"- [{f.id}] {f.text}" for f in rec.findings)
+        board_block = self.board_text(board) if self.search_on else None
+        sys_, p = prompts.researcher(self.problem.describe(), incumbent_src, digest, strategy, self.problem.target_key,
+                                     notebook=notebook, board=board_block, playbook=self.playbook_in)
+        source = extract_code(self.llm("researcher", sys_, p, ctx))
+        board_ids = [i["id"] for i in board]
+
+        def repair(src, error):
+            sys2, p2 = prompts.repair(src or "(no code)", error, self.problem.target_key, keep_header=True)
+            return extract_code(self.llm("researcher", sys2, p2, {**ctx, "repair": True}))
+
+        def finding_fields(final_source):
+            h = parse_header(final_source)
+            origin, ref = parse_idea_source(h["source"], notebook_ids, board_ids)
+            if origin == "unstated":
+                self.event("origin_unstated", header=h, named=ref, **ctx)
+            claim = (h["change"] or "researcher change (no '# Change:' line)").rstrip(".") + "."
+            if h["why"]:
+                claim += f" Why: {h['why'].rstrip('.')}."
+            fields = dict(claim=claim, origin=origin, idea_ref=ref)
+            if origin == "search":
+                idea = next(i for i in board if i["id"] == ref)
+                fields.update(source_title=idea["source_title"], source_url=idea["source_url"],
+                              source_relevance=idea["source_relevance"], search_backend=idea["search_backend"],
+                              known_closed_book=idea["known_closed_book"])
+            out.update(origin=origin, idea_ref=ref, header=h)
+            return fields
+
+        return self._test(out, ctx, source, incumbent_src, incumbent_res, repair=repair, finding=finding_fields)
+
+    # ---------------------------------------------------------------- pipeline
+
+    def _proposal_pipeline(self, gen, idx, incumbent_src, incumbent_res, digest, worst) -> dict:
+        ctx = {"generation": gen, "proposal": idx}
+        strategy = self._strategy(gen, idx)
+        out: dict[str, Any] = {"generation": gen, "proposal": idx, "strategy": strategy}
+        describe = self.problem.describe()
+
+        # b. recall + analyst
+        rec = self._recall(f"{strategy} {self.problem.title} " + " ".join(worst), ctx)
         sys_, p = prompts.analyst(describe, incumbent_src, digest, rec.text, strategy, self.playbook_in)
         reply = self.llm("analyst", sys_, p, ctx)
         a = parse_json(reply)
@@ -540,6 +743,8 @@ class Lab:
         self.event("decision", hash=h, accepted=accepted, reason=reason, select=_paired(sel),
                    confirm=_paired(conf), relative_improvement=rel, error=error, identical=identical,
                    change_comment=cc, **ctx)
+        if callable(finding):
+            finding = finding(source)
         f = Finding(problem=self.problem.name, generation=ctx["generation"], accepted=accepted,
                     select_delta=sel.diff.mean if sel else None, select_low=sel.diff.low if sel else None,
                     select_high=sel.diff.high if sel else None, confirm_delta=conf.diff.mean if conf else None,
@@ -606,6 +811,8 @@ class Lab:
         else:
             incumbent_src = self.start_source or self.problem.seed_source()
             config = {"run_id": self.run_id, "problem": self.problem.name, "mode": self.mode,
+                      "loss_name": getattr(self.problem, "loss_name", None),
+                      "scout_queries": self.scout_queries, "board_size": self.board_size,
                       "generations": self.generations, "proposals": self.proposals, "seed": self.seed,
                       "llm_backend": self.backend.name if self.backend else None,
                       "models": self.models, "memory": self.memory_name, "search": self.search_name,
@@ -621,6 +828,8 @@ class Lab:
             if self.playbook_in:
                 self._write("playbook_in.md", self.playbook_in)
             imported = load_findings(self.start_memory)
+            for f in imported:          # rebuild text from fields: older texts carried confirm-window figures
+                f.text = f.render()
             if self.shuffle_memory and imported:
                 imported = shuffle_outcomes(imported, self.seed)
             for f in imported:
@@ -657,9 +866,17 @@ class Lab:
             digest = failure_digest(inc_res, "select", self.problem.loss_name)
             worst = worst_groups((inc_res.summary or {}).get("select") or {})
             self.event("digest", generation=gen, digest=digest)
+            board = []
+            if self.mode == "researcher" and self.search_on:
+                try:
+                    board = self.scout_board(gen, incumbent_src, digest)
+                except CostCapReached as e:
+                    self.event("board_stopped", generation=gen, reason=str(e))
+                except Exception as e:
+                    self.event("board_failed", generation=gen, error=f"{type(e).__name__}: {e}")
             outcomes = []
             with ThreadPoolExecutor(max_workers=max(1, self.proposals)) as pool:
-                futs = [pool.submit(self.proposal, gen, i, incumbent_src, inc_res, digest, worst)
+                futs = [pool.submit(self.proposal, gen, i, incumbent_src, inc_res, digest, worst, board)
                         for i in range(self.proposals)]
                 for i, fut in enumerate(futs):
                     try:
@@ -703,7 +920,7 @@ class Lab:
         findings = read_jsonl(self.run_dir / "findings.jsonl")
         block = "\n".join(f"- {f.text}" for f in findings)
         text = None
-        if self.mode == "swarm" and self.status != "stopped_cost_cap" and findings:
+        if self.mode in ("researcher", "pipeline") and self.status != "stopped_cost_cap" and findings:
             try:
                 sys_, p = prompts.playbook(self.problem.name, block[:30_000], self.playbook_in)
                 text = self.llm("playbook", sys_, p, {"stage": "end_of_run"}).strip() or None
@@ -730,14 +947,16 @@ def run_lab(problem, evaluator, compare, *, llm_backend="claude_cli", memory="ve
             generations=5, proposals=4, seed=0, run_dir=None, models=None, max_cost_usd=None,
             start_source=None, start_memory=None, playbook=None, resume=False, splits=None,
             p_min=0.95, min_rel_improvement=0.003, confirm_max_diff=0.0, search_k=5, recall_k=8,
-            runs_root=None, mode="swarm", shuffle_memory=False, search_fallback=None) -> dict:
+            runs_root=None, mode="researcher", shuffle_memory=False, search_fallback=None,
+            scout_queries=3, board_size=None) -> dict:
     """Run the research lab; returns the final summary dict (also in <run_dir>/summary.json).
 
     `evaluator` needs `submit(source) -> Future[EvalResult]`; `compare(a, b, splits, window)`
     returns a PairedResult (a = candidate, b = incumbent). `llm_backend`, `memory` and `search`
     take a name or a ready object; `search_fallback` is the chain after the first backend
-    (None: lab.search.DEFAULT_FALLBACK). `mode` is "swarm", "single_agent" or
-    "random_mutation". `shuffle_memory` permutes the outcomes of the findings imported
+    (None: lab.search.DEFAULT_FALLBACK). `mode` is "researcher" (default), "pipeline"
+    ("swarm" is its old name), "single_agent" or "random_mutation"; `scout_queries` and
+    `board_size` (default: proposals) shape the researcher's ideas board. `shuffle_memory` permutes the outcomes of the findings imported
     from `start_memory` (the shuffled-notebook control). `splits` defaults to
     `evaluator.splits`, else `problem.splits()`. `resume=True` continues the run in
     `run_dir` after its last finished generation."""
@@ -747,5 +966,6 @@ def run_lab(problem, evaluator, compare, *, llm_backend="claude_cli", memory="ve
               playbook=playbook, resume=resume, splits=splits,
               thresholds=Thresholds(p_min, min_rel_improvement, confirm_max_diff),
               search_k=search_k, recall_k=recall_k, runs_root=runs_root, mode=mode,
-              shuffle_memory=shuffle_memory, search_fallback=search_fallback)
+              shuffle_memory=shuffle_memory, search_fallback=search_fallback,
+              scout_queries=scout_queries, board_size=board_size)
     return lab.run()

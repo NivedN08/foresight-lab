@@ -9,6 +9,7 @@ Everything is written to the run directory as it happens.
 .venv/bin/python -m lab.swarm.run --problem coast_water --generations 3 --proposals 4 \
     --memory vector --search openalex [--llm claude_cli] [--max-cost 5] [--warm-from <run_dir>]
 .venv/bin/python -m lab.swarm.run --resume <run_dir> [--generations 5]
+.venv/bin/python -m lab.swarm.run --mode pipeline ...          # the first design (negative result)
 .venv/bin/python -m lab.swarm.run --mode single_agent ...      # baseline
 .venv/bin/python -m lab.swarm.run --mode random_mutation ...   # baseline, no model
 .venv/bin/python -m lab.swarm.run --warm-from <run_dir> --shuffle-memory ...   # control arm
@@ -16,52 +17,114 @@ Everything is written to the run directory as it happens.
 
 The evaluator is injected: anything with `submit(source) -> Future[EvalResult]` plus a
 `compare(a, b, splits, window) -> PairedResult` function (a = candidate, b = incumbent;
-negative `diff.mean` means the candidate has lower loss). The CLI builds `lab.evalpool.EvalPool`;
-the tests use an in-process fake with the same contract (`tests/swarm_fakes.py`).
+negative `diff.mean` means the candidate has lower loss). The CLI builds it with
+`lab.evalpool.registry.make_pool`; the tests use an in-process fake with the same contract
+(`tests/swarm_fakes.py`).
 
-## One proposal
+Every mode starts each generation with the **failure digest**, computed by code from the
+incumbent's select-window evaluation: mean loss, every breakdown in `summary["select"]` (by lead,
+and any others the problem reports), quantiles of the per-case loss, the share of loss from the
+worst 10% of cases, and the highest-loss groups. Aggregates only; agents never see a case's truth.
+Every mode ends each proposal the same way: lint, identical-to-incumbent check, evaluation,
+comparison on select and confirm, the decision rule, and one finding (see below).
 
-| Step | Who | What |
-|---|---|---|
-| a. Failure digest | code | From the incumbent's select-window evaluation: mean loss, every breakdown in `summary["select"]` (by lead, and any others the problem reports), quantiles of the per-case loss, the share of loss from the worst 10% of cases, and the highest-loss groups. Aggregates only; agents never see a case's truth. |
-| b. Analyst | small model | Gets the problem description, the incumbent source, the digest, the playbook (if any), the findings recalled from memory, and its **strategy**. Replies in JSON: `diagnosis`, `hypothesis`, `knowledge_gap` (a search query), `strategy`. |
-| c. Closed book | small model | Sees the description and the incumbent; lists two or three changes it already knows that answer the knowledge gap, without search. |
-| d. Scout | small model + search | Searches the knowledge gap. The model first grades every hit `domain` (about the problem's subject), `method` (a generic statistical method) or `unrelated`, prefers domain hits, never uses unrelated ones, and extracts **one** claim. A short judge call then records `known_closed_book`: was this already among the closed-book changes? With search off, no hits, or no usable hit, the claim is the first closed-book change and `origin` is `closed_book`. |
-| e. Engineer | stronger model | Implements **only** the claimed change on top of the incumbent, keeping every other line, and starts the file with `# Change: <what changed>`. The prompt restates the sandbox rules. The loop lints the code itself first; on a missing code block, a lint failure or a failed run, the engineer gets **one** repair attempt with the error shown. |
-| f. Evaluate | evaluator | Runs the candidate, then `compare` against the incumbent on `select` and on `confirm`. A candidate identical to the incumbent (same syntax tree, ignoring whitespace, comments and the `name` attribute) is not evaluated. |
-| g. Decide | code | See below. |
-| h. Record | code | At the end of the generation: one `Finding` per proposal (see "Findings" below) goes to memory and to `findings.jsonl`. |
+## Modes
 
-Every claim, from search or closed book, must name ONE concrete change to the forecaster:
-`technique`, `change` (one sentence), `inputs` (field names), `rule` (formula or rule in words),
-`leads` (which leads it should help and why) and `expected_effect`. General methodology
-("use cross-validation", "ensemble models") is ruled out in the prompt.
+`mode` (`--mode`) sets how a proposal produces its candidate.
 
-Strategies rotate through a short list (use information the incumbent ignores; fix the worst
-lead; simplify or remove a term; borrow a technique from the literature; change how
-coefficients are fitted), shuffled once by `seed`, so concurrent proposals look in different
-directions. Default models: `haiku` for analyst, closed-book, scout, judge and playbook;
-`sonnet` for the engineer and the single agent (override with `models={...}` or
-`--analyst-model/--engineer-model`).
+### `researcher` (default)
 
-## Baseline modes
+One strong call per proposal chooses its own change. It may use or ignore two inputs: the
+notebook, when memory is on, and an ideas board scouted from search, when search is on. The design
+follows the first matrix (see `docs/experiments.md`). A single strong call that chose its own change
+beat the pipeline at both equal proposals and equal dollars, so the lab's assets are now offered as
+inputs instead of being forced on the engineer.
 
-`mode` (`--mode`) swaps how a proposal produces its candidate. Everything from evaluation on
-(identical check, evaluation, comparison, decision rule, findings, logging, generation
-resolution) is shared, so budgets and numbers are comparable.
+**Scouting**, once per generation, before the proposals, and only when search is on:
 
-- `swarm` (default): the steps above.
-- `single_agent`: one model call per proposal (role `single_agent`, the engineer's model) sees
-  the description, the incumbent and the digest and writes the new candidate. No analyst,
-  closed-book step, scout, search, memory recall or repair. The claim recorded is the file's
-  `# Change:` line.
-- `random_mutation`: no model at all. The incumbent's syntax tree is changed at random (seeded by
-  run seed, generation and proposal): either one to three float constants are multiplied by
+1. **Anticipate** (role `anticipate`, the strong model, closed-book): lists the five to eight changes
+   it would try next. This happens before any search, so it is an honest record of what the model
+   already knew.
+2. **Queries** (role `scout_queries`, small model): reads the digest and a compact view of the
+   incumbent, and writes up to `scout_queries` (default 3) search queries aimed at the problem's
+   domain. They run through the search chain (cached as usual).
+3. **Board** (role `scout_board`, small model): distils the hits into at most `board_size` ideas
+   (default: proposals per generation). Each idea has an id (`g<generation>i<k>`), ONE concrete
+   change, why it should help and at which leads, source title and URL, `source_relevance` (domain
+   or method; unrelated ideas are dropped), and `search_backend`.
+4. **Judge** (role `board_judge`, small model): marks each idea as already on the anticipate list or
+   not. That is the idea's `known_closed_book`.
+
+**Proposal**: one call (role `researcher`, the strong model) with:
+- the problem description, the incumbent source and the digest;
+- the proposal's strategy, phrased as "a place you might look (a suggestion, not an order)";
+- the notebook recall, when memory is on: each finding with its id, its select-window effect, and
+  whether the later-window check passed, plus the instruction not to repeat a change that was
+  tested and rejected unless it says what is different;
+- the ideas board, when search is on: "implement one, adapt one, or ignore it";
+- the playbook, when warm.
+
+The file must start with three comment lines:
+`# Change: ...`, `# Idea source: own | notebook:<finding id> | search:<idea id>`, `# Why: ...`.
+There is one repair attempt on a lint or run failure, and it is asked to keep the header.
+
+The finding's `origin` is `own`, `notebook` or `search`, parsed from the header, with `idea_ref`
+set to the id named. A missing header, an unknown kind, or an id that was not shown in that prompt
+gives `unstated`, and the event `origin_unstated` is logged. A search-origin finding also carries
+the board idea's source title, URL, `source_relevance`, `search_backend` and `known_closed_book`.
+
+`researcher` with `--memory none --search none` is `single_agent` with three differences:
+- the strategy suggestion line;
+- the three header lines instead of one `# Change:` line;
+- one repair attempt (single_agent has none).
+
+### `pipeline` (the first design)
+
+Analyst (small model) -> closed-book (small) -> scout with search (small) -> judge (small) ->
+engineer (strong, + one repair). It is kept working because it is a documented negative result.
+`swarm`, its old name, is still accepted (old configs and resumed runs).
+- The analyst gets the description, incumbent, digest, playbook, recalled findings and a strategy,
+  and writes a hypothesis and a search query.
+- The closed-book step lists changes it already knows.
+- The scout grades every hit domain, method or unrelated, and extracts ONE concrete claim.
+- The judge records `known_closed_book`.
+- The engineer must implement only that claim and start the file with `# Change:`.
+
+Every claim names a change, inputs, rule, leads and expected effect. With search off, no hits, or
+no usable hit, the claim is the first closed-book change (`origin` closed_book).
+
+### Baselines
+- `single_agent`: one model call per proposal (the strong model) sees the description, the incumbent
+  and the digest and writes the candidate. No strategy, roles, search, memory or repair. The claim
+  is the file's `# Change:` line.
+- `random_mutation`: no model at all. The incumbent's syntax tree is changed at random, seeded by
+  run seed, generation and proposal. Either one to three float constants are multiplied by
   exp(N(0, 0.3)), or one `a + b` / `a - b` inside a method is replaced by one operand. The result
-  must pass the lint and differ from the incumbent (up to 30 draws). Comments are lost because
-  the source is regenerated from the tree.
+  must pass the lint and differ from the incumbent (up to 30 draws).
 
 Both baselines skip search and write `playbook.md` without a model.
+
+**Strategies** (researcher and pipeline) rotate through a short list, shuffled once by `seed`: use
+information the incumbent ignores; fix the worst lead; simplify or remove a term; borrow a technique
+from the literature; change how coefficients are fitted.
+
+**Default models**: `sonnet` for the strong roles (`researcher`, `anticipate`, `engineer`,
+`single_agent`); `haiku` for the small ones (`analyst`, `closed_book`, `scout`, `judge`,
+`scout_queries`, `scout_board`, `board_judge`, `playbook`). `--engineer-model` and `--analyst-model`
+override each group.
+
+### What agents may see
+
+Agents see select-window effects. They never see confirm-window figures, only whether the
+later-window check passed or failed, in words. This holds in every mode and in the playbook prompt.
+- Finding text (`Finding.render`) says "later-window check: passed / failed".
+- Decision reasons say "confirm: worse than the incumbent on the later (confirm) window".
+- Findings imported from another run have their text rebuilt from their fields, so older texts that
+  carried confirm figures never reach a prompt.
+- The numbers stay in the stored record (`confirm_delta`, the decision event's `confirm` field) for
+  the report and the dashboard.
+- `tests/test_swarm.py::test_no_prompt_carries_a_confirm_delta` checks every prompt of the
+  researcher, pipeline and single-agent modes.
 
 ## The decision rule
 
@@ -92,13 +155,20 @@ Each proposal produces exactly one finding, written when its generation is resol
 - `duplicate_of`: the id of an earlier proposal in the same generation with the same code
   (same hash) or identical losses on select and confirm; null otherwise.
 - `select_delta`, `select_low`, `select_high`, `confirm_delta`: that proposal's own measurement.
-- `origin` (`search`, `closed_book`, `single_agent`, `random_mutation`), `search_backend` (which
-  backend's hits the claim came from), `source_relevance` (`domain`, `method`; search claims
-  only), `known_closed_book`.
+- `origin`: `own`, `notebook`, `search` or `unstated` (researcher); `search` or `closed_book`
+  (pipeline); `single_agent`; `random_mutation`. `idea_ref` is the notebook or board id the
+  researcher named. `search_backend`, `source_relevance` (`domain`, `method`) and
+  `known_closed_book` are set for search-origin findings.
 - `text` starts with `[ACCEPTED, became incumbent]`, `[passed, not adopted]` or `[rejected]`.
 
 So "accepted" and "became incumbent" can be counted separately from `findings.jsonl`, and
-`summary.json` carries `accepted_total`, `became_incumbent_total` and `duplicates_total`.
+`summary.json` carries `accepted_total`, `became_incumbent_total` and `duplicates_total`. It also
+carries:
+- `by_origin`: proposals, passed and adopted per origin;
+- `board`: ideas offered and used, and how many used ones passed and were adopted, and how many
+  passed ones were not known closed-book;
+- `baseline_incumbent`: the generation-0 select and confirm losses;
+- `loss_name`: the problem's loss and unit, also in `config.json`.
 
 ## Memory and search
 
@@ -183,7 +253,7 @@ A **fresh** run starts with an empty notebook and no playbook. A **warm** run
 (`--warm-from <run_dir>`, or `start_memory=` and `playbook=`) differs in two ways only:
 
 1. its notebook starts with the earlier run's findings, so recall can return them;
-2. the earlier run's `playbook.md` is injected into the analyst and engineer prompts.
+2. the earlier run's `playbook.md` is injected into the researcher prompt (the analyst and engineer prompts in pipeline mode).
 
 Both start from the problem's seed candidate unless `start_source` (`--start-source`) is given,
 so a warm-versus-fresh comparison measures what the carried-over knowledge is worth.

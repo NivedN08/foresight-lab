@@ -50,6 +50,7 @@ class Finding:
     duplicate_of: str | None = None  # id of a finding in the same generation with the same code or losses
     search_backend: str | None = None     # backend whose hits the claim came from
     source_relevance: str | None = None   # "domain", "method" or "unrelated" (search claims only)
+    idea_ref: str | None = None      # researcher mode: the notebook finding id or board idea id it named
 
     def __post_init__(self):
         if isinstance(self.time, str):
@@ -68,12 +69,21 @@ class Finding:
             return "passed, not adopted"
         return "ACCEPTED"
 
+    def later_window_words(self) -> str:
+        """The confirm-window result in words only. Agents never see confirm-window figures:
+        they stay in `confirm_delta` for the report and the dashboard."""
+        if self.confirm_delta is None:
+            return ""
+        return "; later-window check: " + ("passed (not worse than the incumbent)" if self.confirm_delta <= 0
+                                            else "failed (worse than the incumbent)")
+
     def render(self) -> str:
+        """The text agents read. It may show select-window effects, never confirm-window numbers."""
         parts = [f"[{self.verdict()}] {self.problem} gen {self.generation}: {self.claim.strip()}"]
         if self.select_delta is not None:
             parts.append(f"Select delta {_num(self.select_delta)} "
-                         f"(95% interval {_num(self.select_low)} to {_num(self.select_high)}); "
-                         f"confirm delta {_num(self.confirm_delta)} (loss units, negative is better).")
+                         f"(95% interval {_num(self.select_low)} to {_num(self.select_high)}; "
+                         f"loss units, negative is better)" + self.later_window_words() + ".")
         else:
             parts.append("Not measured (the candidate did not run).")
         if self.source_title or self.source_url:

@@ -74,7 +74,9 @@ def test_two_arms_two_seeds_run(matrix_root):
         for seed in (1, 2):
             d = root / "m" / arm / f"seed{seed}"
             s = json.loads((d / "summary.json").read_text())
-            assert s["status"] == "finished" and s["generations_done"] == 2 and s["mode"] == arm
+            # the arm named "swarm" uses mode "swarm", the old name of the pipeline mode
+            assert s["status"] == "finished" and s["generations_done"] == 2
+            assert s["mode"] == {"swarm": "pipeline"}.get(arm, arm)
             assert json.loads((d / "spec.json").read_text())["seed"] == seed
             assert (d / "worker.log").exists()
             assert run_state(d) == "finished"
@@ -179,16 +181,28 @@ def test_cheat_sheet_arm_and_text(tmp_path):
 
 
 def test_config_validation_and_shipped_configs():
+    assert sorted(p.stem for p in CONFIGS.glob("*.json")) == [
+        "claim1_ladder_coast", "claim2_transfer_turb_v2", "claim3_search_coast", "claim4_memory_coast"]
     for p in sorted(CONFIGS.glob("*.json")):
         cfg = load_config(p)
-        assert cfg["budget"] == {"generations": 6, "proposals": 4, "max_cost_usd": 5.0} and cfg["seeds"] == [1, 2]
-        assert cfg["comment"]
-    names = {p.stem: [a["name"] for a in load_config(p)["arms"]] for p in CONFIGS.glob("*.json")}
-    assert names["claim1_coast"] == ["swarm", "single_agent", "random_mutation"]
-    assert names["claim3_search_coast"] == ["search_openalex", "search_arxiv", "search_off", "search_exa"]
-    assert names["claim4_memory_coast"] == ["memory_none", "memory_full_context", "memory_vector", "memory_pastdev"]
-    assert names["claim2_transfer_turb"][:3] == ["fresh", "cheat_sheet", "warm"] and "warm_shuffled" in names[
-        "claim2_transfer_turb"]
+        assert cfg["name"] == p.stem and cfg["comment"]
+        assert cfg["budget"] == {"generations": 6, "proposals": 4, "max_cost_usd": 4.0} and cfg["seeds"] == [1, 2]
+    arms = {p.stem: {a["name"]: a for a in load_config(p)["arms"]} for p in CONFIGS.glob("*.json")}
+    assert list(arms["claim1_ladder_coast"]) == ["random_mutation", "single_agent", "pipeline", "researcher_plain",
+                                                 "researcher_memory", "researcher_search", "researcher_full"]
+    ladder = arms["claim1_ladder_coast"]
+    assert (ladder["researcher_plain"]["memory"], ladder["researcher_plain"]["search"]) == ("none", "none")
+    assert (ladder["researcher_memory"]["memory"], ladder["researcher_memory"]["search"]) == ("vector", "none")
+    assert (ladder["researcher_search"]["memory"], ladder["researcher_search"]["search"]) == ("none", "openalex")
+    assert ladder["researcher_full"]["search_fallback"] == ["arxiv"] and ladder["pipeline"]["mode"] == "pipeline"
+    assert list(arms["claim3_search_coast"]) == ["search_off", "search_openalex", "search_arxiv", "search_exa"]
+    assert {a["mode"] for a in arms["claim3_search_coast"].values()} == {"researcher"}
+    assert list(arms["claim4_memory_coast"]) == ["memory_none", "memory_full_context", "memory_vector", "memory_pastdev"]
+    assert {a["search"] for a in arms["claim4_memory_coast"].values()} == {"none"}
+    c2 = arms["claim2_transfer_turb_v2"]
+    assert list(c2) == ["fresh", "cheat_sheet", "warm_notebook", "warm_shuffled", "warm"]
+    assert {(a["mode"], a["memory"], a["search"]) for a in c2.values()} == {("researcher", "vector", "none")}
+    assert {a["warm_from"]["arm"] for a in c2.values() if "warm_from" in a} == {"researcher_memory"}
     with pytest.raises(ValueError, match="needs warm_from"):
         check_config(dict(config(), arms=[{"name": "w", "carry": "both"}]))
     with pytest.raises(ValueError, match="carry must be"):
@@ -199,10 +213,26 @@ def test_config_validation_and_shipped_configs():
 
 
 def test_claim2_plan_blocks_on_claim1(tmp_path):
-    cfg = load_config(CONFIGS / "claim2_transfer_turb.json")
+    cfg = load_config(CONFIGS / "claim2_transfer_turb_v2.json")
     acts = {(r.arm, r.seed): r.action for r in plan(cfg, tmp_path, env={})}
     assert acts[("fresh", 1)] == "new" and acts[("cheat_sheet", 2)] == "new"
     assert acts[("warm", 1)] == "blocked" and acts[("warm_shuffled", 2)] == "blocked"
+    blocked = next(r for r in plan(cfg, tmp_path, env={}) if r.arm == "warm_notebook")
+    assert "claim1_ladder_coast/researcher_memory/seed1" in blocked.message
+
+
+def test_ladder_configs_dry_run(tmp_path):
+    rates = [{"run": "r", "status": "finished", "mode": "researcher", "proposals": 8, "proposals_per_generation": 4,
+              "usd_per_proposal": 0.05, "engineer_usd_per_proposal": 0.04, "s_per_generation": 60.0}]
+    for p in sorted(CONFIGS.glob("*.json")):
+        out = []
+        res = dry_run(load_config(p), root=tmp_path, echo=out.append, rates=rates)
+        text = "\n".join(out)
+        assert f"Matrix {p.stem}" in text and res["runs"]
+    assert not any(tmp_path.iterdir())                                   # a dry run writes nothing
+    ladder = dry_run(load_config(CONFIGS / "claim1_ladder_coast.json"), root=tmp_path, echo=lambda s: None,
+                     rates=rates)
+    assert len(ladder["runs"]) == 14 and {r["action"] for r in ladder["runs"]} == {"new"}
 
 
 def test_dry_run_estimates(tmp_path, matrix_root):
@@ -464,3 +494,34 @@ def test_report_on_the_real_matrix_output(matrix_root):
     assert sw["became_incumbent"] == 2 and sw["cost_usd"]["mean"] > 0
     t = {(x["arm"], x["seed"]): x for x in rpt.build(root, "m", target=1.0)["time_to_target"]}
     assert t[("swarm", 2)]["generation"] == 1 and t[("swarm", 1)]["generation"] == 2
+
+
+# ----------------------------------------------------------------- origin and board tables
+
+
+def test_origin_and_board_tables(tmp_path):
+    (tmp_path / "x").mkdir()
+    rows = [{"accepted": True, "became_incumbent": True, "origin": "search", "known_closed_book": False},
+            {"accepted": True, "became_incumbent": False, "origin": "own"},
+            {"accepted": False, "became_incumbent": False, "origin": "notebook"},
+            {"accepted": False, "became_incumbent": False, "origin": "unstated"}]
+    board = {"offered": 8, "used": 1, "used_passed": 1, "used_adopted": 1, "passed_not_known_closed_book": 1}
+    write_run(tmp_path, "researcher_full", 1, curve([3.0, 2.8]), findings=rows, board=board, mode="researcher")
+    write_run(tmp_path, "researcher_full", 2, curve([3.0, 2.9]), findings=rows[:2], board=dict(board, offered=4),
+              mode="researcher")
+    old = [{"accepted": True, "origin": "search"}, {"accepted": True, "origin": "search", "supersedes": "a"},
+           {"accepted": False, "origin": "closed_book"}]
+    write_run(tmp_path, "old_swarm", 1, curve([3.0, 2.95]), findings=old, mode="swarm")
+    rep = rpt.build(tmp_path, "x")
+    o = {(r["arm"], r["origin"]): r for r in rep["origins"]}
+    assert o[("researcher_full", "search")] == {"arm": "researcher_full", "origin": "search", "seeds": 2,
+                                                 "proposals": 2, "passed": 2, "adopted": 2}
+    assert o[("researcher_full", "unstated")]["proposals"] == 1 and o[("researcher_full", "own")]["adopted"] == 0
+    assert o[("old_swarm", "search")] == {"arm": "old_swarm", "origin": "search", "seeds": 1, "proposals": 1,
+                                          "passed": 1, "adopted": None}       # old format: n/a, follow-up dropped
+    b = {r["arm"]: r for r in rep["board"]}
+    assert set(b) == {"researcher_full"} and b["researcher_full"]["offered"] == 12
+    assert b["researcher_full"]["used"] == 2 and b["researcher_full"]["share_passed_not_known"] == 1.0
+    md = rpt.render(rep)
+    assert "## Where the ideas came from" in md and "| old_swarm | search | 1 | 1 | 1 | n/a |" in md
+    assert "Ideas board (researcher arms with search)" in md and "| researcher_full | 2 | 12 | 2 | 2 | 2 | 1.00 |" in md

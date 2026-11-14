@@ -244,7 +244,9 @@ Return the COMPLETE file in one ```python block."""
     return SINGLE_AGENT_SYSTEM, prompt
 
 
-def repair(source: str, error: str, target_key: str) -> tuple[str, str]:
+def repair(source: str, error: str, target_key: str, keep_header: bool = False) -> tuple[str, str]:
+    keep_header = ("\nKeep the comment lines at the top of the file (# Change:, # Idea source:, # Why:) "
+                   "as they are, unless the fix changes what they say.") if keep_header else ""
     prompt = f"""This candidate failed.
 
 # Error
@@ -257,7 +259,7 @@ def repair(source: str, error: str, target_key: str) -> tuple[str, str]:
 
 # {SANDBOX_RULES.format(target_key=target_key)}
 
-Fix the problem and return the COMPLETE corrected file in one ```python block."""
+Fix the problem and return the COMPLETE corrected file in one ```python block.{keep_header}"""
     return ENGINEER_SYSTEM, prompt
 
 
@@ -276,3 +278,150 @@ Keep only what the findings support. A change counts as "did not pay off" only i
 under pitfalls instead. "Passed, not adopted" means it worked but another change won that
 generation. Plain sentences."""
     return PLAYBOOK_SYSTEM, prompt
+
+
+# ====================================================================== researcher mode
+#
+# One strong call per proposal that chooses its own change, with two optional inputs it
+# may use or ignore: the notebook (what was tried and what it did) and an ideas board
+# scouted from search once per generation.
+
+RESEARCHER_SYSTEM = ("You are a forecasting researcher. You study the current model and where it loses, "
+                     "choose ONE change you expect to lower the loss, and write the complete, working Python "
+                     "file that obeys the sandbox rules exactly. Reply with the full file in one ```python block.")
+
+HEADER_RULES = """The file must start with exactly these three comment lines:
+# Change: <one line: what you changed>
+# Idea source: own | notebook:<finding id> | search:<idea id>
+# Why: <one line: why it should lower the loss, and at which leads>
+Use "own" for your own idea, "notebook:<id>" if it builds on a notebook finding (use its id in
+square brackets), "search:<id>" if it implements or adapts a board idea (use its id)."""
+
+
+def researcher(describe: str, incumbent: str, digest: str, strategy: str, target_key: str, *,
+               notebook: str | None = None, board: str | None = None, playbook: str | None = None) -> tuple[str, str]:
+    parts = [f"""# Problem
+{describe.strip()}
+
+# Current model (the incumbent)
+```python
+{incumbent.strip()}
+```
+
+# Where the incumbent loses (select window; aggregates only)
+{digest.strip()}
+"""]
+    if notebook is not None:
+        parts.append(f"""# Lab notebook: changes already tried on this problem
+Each entry has an id in square brackets, what was tried, its measured effect on the select window, and
+whether it passed the later-window check. "ACCEPTED, became incumbent" means it is already in the model.
+Do not repeat a change that was tested and rejected unless you say in "# Why:" what is different this time.
+{notebook.strip() or "(nothing recorded yet)"}
+""")
+    if board is not None:
+        parts.append(f"""# Ideas board: changes scouted from the literature this generation
+You may implement one board idea, adapt one, or ignore the board entirely. Each has an id.
+{board.strip() or "(the scouts found nothing usable this generation)"}
+""")
+    parts.append(_playbook_block(playbook))
+    parts.append(f"""# A place you might look (a suggestion, not an order)
+{strategy}
+
+# {SANDBOX_RULES.format(target_key=target_key)}
+
+# Your task
+Choose ONE concrete change that should lower the loss (which inputs, what formula or rule, which leads it
+helps) and implement it on top of the incumbent, keeping everything else the same. Change the `name`
+attribute to say what changed.
+{HEADER_RULES}
+Return the COMPLETE file in one ```python block.""")
+    return RESEARCHER_SYSTEM, "\n".join(x for x in parts if x)
+
+
+ANTICIPATE_SYSTEM = ("You are a forecasting researcher. Answer from what you already know; you have no search. "
+                     "Reply with a single JSON object and nothing else.")
+
+
+def anticipate(describe: str, incumbent: str, digest: str) -> tuple[str, str]:
+    """Closed-book, once per generation, before the ideas board is shown: what would you try next?"""
+    prompt = f"""# Problem
+{describe.strip()}
+
+# Current model (the incumbent)
+```python
+{incumbent.strip()}
+```
+
+# Where the incumbent loses (select window; aggregates only)
+{digest.strip()}
+
+Without searching, list the five to eight concrete changes you would try next on this model, each in one
+sentence (which inputs, what formula or rule).
+
+Reply with JSON exactly like this: {{"changes": ["...", "..."]}}"""
+    return ANTICIPATE_SYSTEM, prompt
+
+
+SCOUT_QUERIES_SYSTEM = ("You write literature search queries for a forecasting research lab. Reply with a "
+                        "single JSON object and nothing else.")
+
+
+def scout_queries(title: str, describe_short: str, incumbent_summary: str, digest: str, n: int) -> tuple[str, str]:
+    prompt = f"""Problem: {title}
+{describe_short.strip()}
+
+The current model, in short:
+{incumbent_summary.strip()}
+
+Where it loses (select window):
+{digest.strip()}
+
+Write up to {n} literature search queries (4 to 10 words each) that would find concrete techniques for THIS
+problem's subject (the physical or real-world process being forecast), aimed at where the model loses.
+Prefer domain terms over generic statistics words.
+
+Reply with JSON exactly like this: {{"queries": ["...", "..."]}}"""
+    return SCOUT_QUERIES_SYSTEM, prompt
+
+
+BOARD_SYSTEM = ("You distil search results into a short board of concrete ideas for a forecasting research "
+                "lab. Reply with a single JSON object and nothing else.")
+
+
+def scout_board(title: str, describe_short: str, hits: list[dict], n: int) -> tuple[str, str]:
+    lines = []
+    for i, h in enumerate(hits, 1):
+        lines.append(f"[{i}] {h.get('title')} ({h.get('year')}) {h.get('url')}\n{h.get('text') or '(no abstract)'}")
+    prompt = f"""Problem: {title}
+{describe_short.strip()}
+
+# Search results
+{chr(10).join(lines)}
+
+Extract at most {n} ideas, each ONE concrete change to a forecaster for this problem, stated in one or two
+sentences (which inputs, what formula or rule), with why it should help and at which leads. Judge each
+idea's source: "domain" if the result is about this problem's subject, "method" if it is a generic
+statistical or machine-learning method, "unrelated" otherwise. Prefer domain results. Use only what the
+results say; do not invent results. General methodology ("use cross-validation", "ensemble models") is
+not an idea.
+
+Reply with JSON exactly like this:
+{{"ideas": [{{"hit": 1, "change": "...", "why": "...", "leads": "...", "source_relevance": "domain",
+             "source_title": "...", "source_url": "..."}}]}}"""
+    return BOARD_SYSTEM, prompt
+
+
+def board_judge(ideas: list[dict], anticipated: list[str]) -> tuple[str, str]:
+    listed = "\n".join(f"- {c}" for c in anticipated) or "(none)"
+    board = "\n".join(f"- {i['id']}: {i['change']}" for i in ideas)
+    prompt = f"""Changes a strong model said it would try next, before seeing any search results:
+{listed}
+
+Ideas found by search:
+{board}
+
+For each search idea, was it essentially already on the first list (same core change, even if worded
+differently)?
+
+Reply with JSON exactly like this: {{"known": {{"<idea id>": true}}}}"""
+    return JUDGE_SYSTEM, prompt

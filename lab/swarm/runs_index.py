@@ -57,7 +57,10 @@ def _row(run_dir: Path) -> dict | None:
     status = s.get("status") or ("unreadable" if (run_dir / "summary.json").exists() else "starting")
     return {
         "problem": run_dir.parent.name, "run_id": run_dir.name,
-        "mode": s.get("mode") or c.get("mode") or "swarm", "status": status,
+        "mode": s.get("mode") or c.get("mode") or "pipeline", "status": status,
+        "loss_name": s.get("loss_name") or c.get("loss_name"),
+        "baseline_select": (s.get("baseline_incumbent") or {}).get("select"),
+        "baseline_confirm": (s.get("baseline_incumbent") or {}).get("confirm"),
         "generations_done": s.get("generations_done"),
         "generations_planned": s.get("generations_planned", c.get("generations")),
         "incumbent_select": inc.get("select"), "incumbent_confirm": inc.get("confirm"),

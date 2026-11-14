@@ -1,0 +1,76 @@
+{
+ "name": "claim2_transfer_turb_v2",
+ "comment": "Claim 2: the lab gets better at research, not only at one problem. Turbulence for every arm; researcher mode, vector memory, search off everywhere. Warm arms carry from claim1_ladder_coast arm researcher_memory with the same seed, so run claim 1 first (they wait, marked blocked, until their source has finished). Compare warm against fresh and cheat_sheet; warm_shuffled against warm_notebook (both carry a notebook and no playbook, so only the notebook's content differs).",
+ "problem": "turb",
+ "budget": {
+  "generations": 6,
+  "proposals": 4,
+  "max_cost_usd": 4.0
+ },
+ "target": {
+  "rule": "time to target: confirm loss at or below (1 - rel) x the starting formula's (seed's) generation-0 confirm loss",
+  "rel": 0.05,
+  "comment": "Fixed before any result, by the experiment protocol. Read only by lab.experiments.report; the runner ignores this key."
+ },
+ "seeds": [
+  1,
+  2
+ ],
+ "arms": [
+  {
+   "name": "fresh",
+   "comment": "Nothing carried: the reference.",
+   "mode": "researcher",
+   "memory": "vector",
+   "search": "none",
+   "carry": "none"
+  },
+  {
+   "name": "cheat_sheet",
+   "comment": "A fixed text of a playbook's length with the candidate interface and this problem's input and sandbox sections; no findings.",
+   "mode": "researcher",
+   "memory": "vector",
+   "search": "none",
+   "carry": "cheat_sheet"
+  },
+  {
+   "name": "warm_notebook",
+   "comment": "The coast notebook, no playbook.",
+   "mode": "researcher",
+   "memory": "vector",
+   "search": "none",
+   "carry": "notebook_only",
+   "warm_from": {
+    "matrix": "claim1_ladder_coast",
+    "arm": "researcher_memory",
+    "seed": "same"
+   }
+  },
+  {
+   "name": "warm_shuffled",
+   "comment": "The coast notebook with outcomes shuffled across findings, no playbook.",
+   "mode": "researcher",
+   "memory": "vector",
+   "search": "none",
+   "carry": "shuffled_notebook",
+   "warm_from": {
+    "matrix": "claim1_ladder_coast",
+    "arm": "researcher_memory",
+    "seed": "same"
+   }
+  },
+  {
+   "name": "warm",
+   "comment": "The claim: the coast notebook and playbook.",
+   "mode": "researcher",
+   "memory": "vector",
+   "search": "none",
+   "carry": "both",
+   "warm_from": {
+    "matrix": "claim1_ladder_coast",
+    "arm": "researcher_memory",
+    "seed": "same"
+   }
+  }
+ ]
+}
