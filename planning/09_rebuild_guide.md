@@ -51,9 +51,27 @@ Statistics: paired comparison on the same cases, resampling whole blocks (statio
 
 Trap: resampling single cases gave intervals several times too narrow, because errors an hour apart at the same place move together.
 
+**What a forecaster is.** One Python source file defining `class Forecaster` with a `name`, `fit(cases, truths)` (called once with the train window) and `predict(case)` (called once per later case; returns a dict with the target key, a finite float). It may import `math` and `numpy` only, is capped in size, and may not carry tables of literal numbers. Baselines, the starting formula and every model-written candidate use this one interface, so they are all scored by the same code.
+
 ## 3. First problem end to end
 
 For water level: residual = observed minus the official tide prediction. Leads 1, 3, 6, 12, 24 hours. Baselines: tide table (zero), current gap continues, damped version, physics formula (damped persistence, pressure change, wind, recent trend; least squares per lead).
+
+**What each case gives the forecaster** (everything knowable at the issue time; this list is what let the lab find its gains, so build all of it):
+
+| Input | Meaning |
+|---|---|
+| station, lat, lon, lead in hours | which gauge and how far ahead (1, 3, 6, 12, 24) |
+| current residual and its age in minutes | newest gauge reading minus the tide prediction |
+| hourly residual for the last 72 hours | the gauge's own recent history; 12 and 25 hours back are one and two tidal cycles |
+| 72-hour mean and 3-hour trend of the residual | the season's offset and where it is heading |
+| tide prediction now, at the target, and for every hour between | the astronomical tide the residual rides on |
+| forecast pressure and wind at the gauge for every hour from issue to target | from a weather run that existed at the issue time; a flag says whether it is complete |
+| the same recent residuals at the neighbouring gauges to the north and south | surges and slow coastal waves show up next door first; this was the lab's most reused idea |
+| wave height at the nearest buoy, when there is one | missing for many gauges; say so |
+| hour of day, day of year | |
+
+Cases are a fixed random sample of hourly issue times, spread evenly over stations and leads: 12,000 train, 6,000 select, 6,000 confirm, 8,000 test, over 90 days. The description shown to the model must not quote any figure from the test period.
 
 Data sources and what we learned about each:
 
