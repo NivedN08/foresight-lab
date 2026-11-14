@@ -260,7 +260,8 @@ def test_chain_falls_back_on_empty_and_reports_nothing_found():
 
 def test_get_search_default_chain():
     s = get_search("openalex", cache_dir=None)
-    assert isinstance(s, ChainSearch) and [b.name for b in s.backends] == ["openalex", "arxiv"] and s.name == "openalex"
+    assert isinstance(s, ChainSearch) and s.name == "openalex"
+    assert [b.name for b in s.backends] == ["openalex", "crossref", "arxiv"]
     assert isinstance(get_search("openalex", fallback=(), cache_dir=None), OpenAlexSearch)
     assert [b.name for b in get_search("arxiv", fallback=["openalex"], cache_dir=None).backends] == ["arxiv", "openalex"]
     assert isinstance(get_search("arxiv", cache_dir=None), ArxivSearch)
@@ -295,3 +296,82 @@ def test_exa_retries_429_too():
     s = ExaSearch(api_key="k", transport=httpx.MockTransport(Sequence429(1, reply=EXA_REPLY)), cache_dir=None,
                   sleep=slept.append)
     assert len(s.search(QUERY)) == 2 and slept == [14.0]
+
+
+# --- Crossref, request spacing, daily limits ---
+
+CROSSREF_REPLY = {"status": "ok", "message": {"items": [
+    {"title": ["Storm surge forecasts from a global tide-gauge network"], "DOI": "10.1000/surge",
+     "abstract": "<jats:title>Abstract</jats:title>\n <jats:p>Surge follows   pressure and <jats:italic>wind</jats:italic>.</jats:p>",
+     "issued": {"date-parts": [[2021, 5, 4]]}},
+    {"title": ["Year only"], "DOI": "10.1000/year", "abstract": "<p>Abstract: Shelf waves.</p>",
+     "issued": {"date-parts": [[2022]]}},
+    {"title": ["Too late"], "DOI": "10.1000/late", "abstract": "<p>Later work.</p>",
+     "issued": {"date-parts": [[2023, 2]]}},
+    {"title": ["No abstract"], "DOI": "10.1000/none", "issued": {"date-parts": [[2020]]}}]}}
+
+
+def test_crossref_parses_recorded_reply_and_filters_by_date():
+    from lab.search import CrossrefSearch, strip_jats
+    rec = Recorder(CROSSREF_REPLY)
+    s = CrossrefSearch(transport=httpx.MockTransport(rec), cache_dir=None)
+    hits = s.search(QUERY, k=5, before=datetime(2022, 6, 1, tzinfo=timezone.utc))
+    assert [h.url for h in hits] == ["https://doi.org/10.1000/surge", "https://doi.org/10.1000/year"]
+    assert hits[0].text == "Surge follows pressure and wind." and hits[0].year == 2021 and hits[0].backend == "crossref"
+    assert hits[1].text == "Shelf waves." and hits[1].year == 2022
+    q = rec.requests[0].url.params
+    assert q["filter"] == "has-abstract:true,until-pub-date:2022-05-31" and q["rows"] == "5"
+    assert "mailto" not in q                              # nothing that identifies the user is sent
+    assert strip_jats(None) == ""
+    assert get_search("crossref", cache_dir=None).name == "crossref"
+
+
+def test_daily_limit_is_not_retried_and_switches_the_backend_off(tmp_path):
+    body = {"error": "Rate limit exceeded", "message": "Insufficient budget. The free daily budget is used up; "
+                                                       "resets at midnight UTC."}
+    slept, now = [], [1000.0]
+    t = Sequence429(99, body=body)
+    s = OpenAlexSearch(transport=httpx.MockTransport(t), cache_dir=tmp_path, sleep=slept.append, clock=lambda: now[0])
+    with pytest.raises(SearchError, match="daily limit used up"):
+        s.search(QUERY)
+    assert len(t.requests) == 1 and slept == []            # no waiting, no retry
+    with pytest.raises(SearchError, match="skipped"):
+        s.search("another query")
+    assert len(t.requests) == 1                            # switched off: no request made
+    now[0] += 1801
+    with pytest.raises(SearchError, match="daily limit used up"):
+        s.search("a third query")
+    assert len(t.requests) == 2                            # tried again after the pause
+    assert s.stats()["failed"] == 3 and s.stats()["retries"] == 0
+
+
+def test_requests_are_spaced_across_instances_sharing_a_cache(tmp_path):
+    slept, now = [], [500.0]
+
+    def sleep(sec):
+        slept.append(round(sec, 3))
+        now[0] += sec
+
+    def make():
+        return ArxivSearch(transport=httpx.MockTransport(Recorder(ARXIV_REPLY)), cache_dir=tmp_path,
+                           sleep=sleep, clock=lambda: now[0])
+    a, b = make(), make()
+    a.search("first")
+    assert slept == []                                     # nothing to wait for on the first request
+    now[0] += 1.0
+    b.search("second")                                     # another instance, same cache directory
+    assert slept == [2.0]
+    now[0] += 10.0
+    a.search("third")
+    assert slept == [2.0]                                  # long enough since the last one
+    assert ArxivSearch.min_interval_s == 3.0 and OpenAlexSearch.min_interval_s == 0.0
+
+
+def test_chain_reaches_crossref_when_the_first_two_fail():
+    from lab.search import CrossrefSearch
+    oa = OpenAlexSearch(transport=httpx.MockTransport(Sequence429(99)), cache_dir=None, sleep=lambda s: None)
+    ax = ArxivSearch(transport=httpx.MockTransport(lambda r: httpx.Response(503, text="busy")), cache_dir=None)
+    cr = CrossrefSearch(transport=httpx.MockTransport(Recorder(CROSSREF_REPLY)), cache_dir=None)
+    out = ChainSearch([oa, ax, cr]).search_detailed(QUERY, k=5)
+    assert out.backend == "crossref" and len(out.hits) == 3
+    assert [f["backend"] for f in out.failures] == ["openalex", "arxiv"]

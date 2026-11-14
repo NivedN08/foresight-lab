@@ -117,7 +117,7 @@ shuffled arm, and the report will not test a difference on fewer than five.
 |---|---|---|---|
 | `claim1_ladder_coast.json` | 1: the lab beats simpler uses of the same budget, and each asset pays | `random_mutation`, `single_agent`, `pipeline`, `researcher_plain`, `researcher_memory`, `researcher_search`, `researcher_full` | up the ladder, at equal proposals and at equal dollars |
 | `claim4_memory_coast.json` | 4: shared memory pays | researcher, search off: `memory_none`, `memory_full_context`, `memory_vector`, `memory_pastdev` (needs `PAST_API_KEY`) | final loss, minutes to target, dollars, recall latency: reported separately |
-| `claim3_search_coast.json` | 3: search finds what the model did not know | researcher, vector memory: `search_off`, `search_openalex`, `search_arxiv`, `search_exa` (needs `EXA_API_KEY`) | origin and board tables; each arm uses one backend, no fallback |
+| `claim3_search_coast.json` | 3: search finds what the model did not know | researcher, vector memory: `search_off`, `search_crossref`, `search_arxiv`, `search_openalex` (needs `OPENALEX_API_KEY`), `search_exa` (needs `EXA_API_KEY`) | origin and board tables; each arm uses one backend, no fallback |
 | `claim2_transfer_turb_v2.json` | 2: the lab gets better at research | researcher, vector memory, search off on turbulence: `fresh`, `cheat_sheet`, `warm_notebook`, `warm_shuffled`, `warm`, carrying from claim 1's `researcher_memory` arm | warm against fresh and cheat_sheet; warm_shuffled against warm_notebook |
 
 What each rung of the ladder isolates:

@@ -187,14 +187,20 @@ also hide a finding once a visible later finding supersedes it. Every backend ap
 finding it is given to a JSONL file (`memory.jsonl` in the run directory), and reopening the
 file reloads it.
 
-Search (`lab/search/`): `openalex` and `arxiv` (keyless), `exa` (`EXA_API_KEY`) and `none`.
+Search (`lab/search/`): `openalex`, `crossref` and `arxiv` (keyless), `exa` (`EXA_API_KEY`) and `none`.
 Results are cached under `cache/search/<backend>/` (failures are not cached).
 
 - Rate limits: on HTTP 429 a backend waits for the time the reply asks for (`Retry-After`, or
   "retry in Ns" in the body; 5 s if neither), at most 20 s, and retries up to twice.
-- Fallback: `get_search("openalex")` is a chain, OpenAlex then arXiv. If a backend still fails,
-  or finds nothing, the next one is tried. Choose the chain with `search_fallback=[...]`
-  (`--search-fallback arxiv,exa`, or `none`).
+- A 429 that says the daily allowance is used up is not retried, and that backend is skipped for
+  the next 30 minutes of the run. OpenAlex's keyless allowance is shared by network address and
+  ran out during the ladder experiment: every one of its 72 calls in the two search arms failed.
+- Requests to one backend are spaced across all processes that share the cache directory
+  (arXiv 3 s, Crossref 0.5 s). Two runs in parallel were timing arXiv out before this.
+- Fallback: `get_search("openalex")` is a chain, OpenAlex, then Crossref, then arXiv. If a backend
+  still fails, or finds nothing, the next one is tried. Crossref comes before arXiv because arXiv
+  ORs the query words and often returns off-topic papers. Choose the chain with
+  `search_fallback=[...]` (`--search-fallback arxiv,exa`, or `none`).
 - OpenAlex works without a key but anonymous search is rate-limited. `OPENALEX_API_KEY`, if set,
   is sent as `Authorization: Bearer <key>` (one of the two ways OpenAlex documents).
   `OPENALEX_MAILTO`, if set, is sent as `mailto`; the current OpenAlex docs no longer mention it.

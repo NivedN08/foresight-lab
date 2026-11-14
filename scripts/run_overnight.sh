@@ -3,9 +3,11 @@
 # Order: the claim 1 ladder first (claim 2's warm arms carry from its researcher_memory arm),
 # then memory, search, and transfer. Safe to re-run: finished runs are skipped and
 # interrupted runs resume. See docs/experiments.md.
+# Give experiment names as arguments to run only those, in that order.
 cd "$(dirname "$0")/.." || exit 1
 PY=.venv/bin/python
-for m in claim1_ladder_coast claim4_memory_coast claim3_search_coast claim2_transfer_turb_v2; do
+if [ $# -eq 0 ]; then set -- claim1_ladder_coast claim4_memory_coast claim3_search_coast claim2_transfer_turb_v2; fi
+for m in "$@"; do
   echo "=== $(date -u +%FT%TZ) start $m"
   $PY -u -m lab.experiments.matrix run lab/experiments/configs/$m.json --parallel 2
   mkdir -p runs/exp/$m

@@ -25,10 +25,11 @@
    "search": "none"
   },
   {
-   "name": "search_openalex",
+   "name": "search_crossref",
+   "comment": "Keyless; journal articles and preprints with abstracts.",
    "mode": "researcher",
    "memory": "vector",
-   "search": "openalex",
+   "search": "crossref",
    "search_fallback": []
   },
   {
@@ -37,6 +38,17 @@
    "memory": "vector",
    "search": "arxiv",
    "search_fallback": []
+  },
+  {
+   "name": "search_openalex",
+   "mode": "researcher",
+   "memory": "vector",
+   "search": "openalex",
+   "search_fallback": [],
+   "requires_env": [
+    "OPENALEX_API_KEY"
+   ],
+   "comment": "Requires OPENALEX_API_KEY: the keyless daily allowance is shared by network address and ran out during the ladder experiment. Skipped with a message when it is not set."
   },
   {
    "name": "search_exa",

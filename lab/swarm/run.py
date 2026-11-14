@@ -52,10 +52,10 @@ def main(argv=None) -> int:
     ap.add_argument("--generations", type=int, default=None, help="default 3 (on --resume: as configured)")
     ap.add_argument("--proposals", type=int, default=4)
     ap.add_argument("--memory", default="vector", choices=["none", "full_context", "vector", "pastdev"])
-    ap.add_argument("--search", default="openalex", choices=["none", "openalex", "arxiv", "exa"])
+    ap.add_argument("--search", default="openalex", choices=["none", "openalex", "arxiv", "crossref", "exa"])
     ap.add_argument("--search-fallback", default=None,
                     help="comma-separated backends to try when the first fails or finds nothing "
-                         "(default for openalex: arxiv); 'none' for no fallback")
+                         "(default for openalex: crossref, then arxiv); 'none' for no fallback")
     ap.add_argument("--mode", default="researcher",
                     choices=["researcher", "pipeline", "single_agent", "random_mutation", "swarm"],
                     help="researcher (default): one strong call per proposal with optional notebook and ideas "

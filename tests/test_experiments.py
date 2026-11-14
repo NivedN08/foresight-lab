@@ -195,7 +195,11 @@ def test_config_validation_and_shipped_configs():
     assert (ladder["researcher_memory"]["memory"], ladder["researcher_memory"]["search"]) == ("vector", "none")
     assert (ladder["researcher_search"]["memory"], ladder["researcher_search"]["search"]) == ("none", "openalex")
     assert ladder["researcher_full"]["search_fallback"] == ["arxiv"] and ladder["pipeline"]["mode"] == "pipeline"
-    assert list(arms["claim3_search_coast"]) == ["search_off", "search_openalex", "search_arxiv", "search_exa"]
+    c3 = arms["claim3_search_coast"]
+    assert list(c3) == ["search_off", "search_crossref", "search_arxiv", "search_openalex", "search_exa"]
+    assert {n: a.get("requires_env") for n, a in c3.items() if a.get("requires_env")} == {
+        "search_openalex": ["OPENALEX_API_KEY"], "search_exa": ["EXA_API_KEY"]}
+    assert all(a["search_fallback"] == [] for n, a in c3.items() if n != "search_off")   # one backend per arm
     assert {a["mode"] for a in arms["claim3_search_coast"].values()} == {"researcher"}
     assert list(arms["claim4_memory_coast"]) == ["memory_none", "memory_full_context", "memory_vector", "memory_pastdev"]
     assert {a["search"] for a in arms["claim4_memory_coast"].values()} == {"none"}

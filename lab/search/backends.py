@@ -1,7 +1,8 @@
-"""Search backends: none, openalex, arxiv, exa."""
+"""Search backends: none, openalex, arxiv, crossref, exa."""
 from __future__ import annotations
 
 import os
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
@@ -87,6 +88,7 @@ class ArxivSearch(Searcher):
 
     name = "arxiv"
     URL = "https://export.arxiv.org/api/query"
+    min_interval_s = 3.0     # arXiv asks for three seconds between requests; faster ones time out or get 429
 
     def _fetch(self, query, k, before):
         q = f"all:{query}"
@@ -117,6 +119,55 @@ def parse_arxiv(xml_text: str, before: datetime | None = None) -> list[Hit]:
         hits.append(Hit(title=clip(title, 300), url=url, year=when.year if when else None,
                         text=clip(summary)))
     return hits
+
+
+_TAG = re.compile(r"<[^>]+>")
+
+
+def strip_jats(text: str | None) -> str:
+    """Crossref abstracts are JATS XML; keep the words and drop a leading 'Abstract' heading."""
+    plain = " ".join(_TAG.sub(" ", text or "").split())
+    plain = re.sub(r"\s+([.,;:)])", r"\1", plain)      # a closing tag before punctuation leaves a gap
+    return re.sub(r"^abstract\b[:.]?\s*", "", plain, flags=re.I)
+
+
+def _issued(work: dict) -> tuple[int, ...]:
+    parts = ((work.get("issued") or {}).get("date-parts") or [[]])[0] or []
+    return tuple(int(p) for p in parts if p is not None)
+
+
+class CrossrefSearch(Searcher):
+    """https://api.crossref.org/works?query=... (keyless). Journal articles and
+    preprints registered with Crossref; only works that carry an abstract are
+    asked for, since the scouts need text to read. Dates can be a bare year or
+    year-month; a work is dropped only when its date is certainly not before
+    `before` (the API filter has already applied the same cut by day)."""
+
+    name = "crossref"
+    URL = "https://api.crossref.org/works"
+    min_interval_s = 0.5
+
+    def _fetch(self, query, k, before):
+        filters = ["has-abstract:true"]
+        if before is not None:
+            filters.append(f"until-pub-date:{_last_day_before(before)}")
+        params = {"query": query, "rows": str(max(1, min(50, k))), "filter": ",".join(filters),
+                  "select": "title,abstract,DOI,URL,issued"}
+        items = (self._get(self.URL, params=params).json().get("message") or {}).get("items") or []
+        hits = []
+        for w in items:
+            date = _issued(w)
+            if before is not None and date:
+                cut = (before.year, before.month, before.day)[: len(date)]
+                if date > cut:
+                    continue
+            title = " ".join(w.get("title") or [])
+            url = f"https://doi.org/{w['DOI']}" if w.get("DOI") else (w.get("URL") or "")
+            text = strip_jats(w.get("abstract"))
+            if not title or not url or not text:
+                continue
+            hits.append(Hit(title=clip(title, 300), url=url, year=date[0] if date else None, text=clip(text)))
+        return hits
 
 
 class ExaSearch(Searcher):

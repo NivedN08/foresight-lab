@@ -42,10 +42,10 @@ One section per prize: what the sponsor asked for, what we show, the number to p
 
 **Slide numbers**
 - Share of accepted changes that came from claims the model did not know closed-book.
-- Useful claims per 100 searches: Exa against keyless scholarly search (OpenAlex, arXiv), same lab, same seeds.
+- Useful claims per 100 searches: Exa against keyless scholarly search (Crossref, arXiv; OpenAlex with a key), same lab, same seeds.
 - Loss after a fixed budget with search on and off.
 
-**Experiment:** claim 3. Needs the Exa key; until then the same experiment runs with OpenAlex and arXiv, which become the comparison baseline.
+**Experiment:** claim 3. Needs the Exa key; until then the same experiment runs with Crossref and arXiv, which become the comparison baseline. (OpenAlex's keyless daily allowance ran out during the first experiment, so that arm now needs a key.)
 
 **Why Exa should do better here:** in our first long run, keyless arXiv search kept returning generic forecasting-competition papers for an oceanography problem. The useful material is domain papers and practitioner write-ups (forecast-office notes, operator manuals), which a general web index covers and arXiv does not.
 
