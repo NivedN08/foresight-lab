@@ -76,10 +76,15 @@ Same lab, same seeds, four memory setups: none, full context, plain vector store
 - A simulator or a backtest is not the real world; the sealed forecasts are the part reality graded.
 - One weekend is a small sample of weather.
 - Pilot reports are biased toward where aircraft fly and toward reporting bumps.
-- For water level, most of the skill at one hour comes from "the current gap continues"; the lab's contribution is at longer leads.
+- For water level, most of the skill at one hour comes from "the current gap continues"; the hand-written formula adds nothing there.
+- The lab sees each change's score on the select and confirm windows (they appear in its notebook), so both are selected on. Only the test window is clean.
 
 ## Change log
 
 | When | Change | Why |
 |---|---|---|
+| Nov 13, evening | Claim 2 control changed: "fresh, handed the old best forecaster" replaced by "fresh with a cheat sheet" (the interface and sandbox rules, no findings). Rehearsal runs use 2 seeds, not 5 | A forecaster for one problem cannot run on another, so it cannot be handed over. Two seeds is all one laptop can do overnight; the event runs use 5. Two seeds support no significance claim and the report says so. |
+| Nov 13, evening | Time-to-target goal fixed by rule: 5% below the starting formula's loss on the confirm window, per problem | The report's first version set the goal after the fact from the reference arm's own results. The rule was set while the first matrix (lab vs baselines on the coast) was partly finished; the other three had not started. |
+| Nov 13, evening | "Same budget" defined as the same number of proposals; dollars and minutes are reported beside it | A single-agent proposal costs about a seventh of a swarm proposal, so equal proposals is not equal money. Both views are reported. |
+| Nov 13, evening | The problem description shown to agents no longer quotes the tide-table offset of the most recent weeks | That figure came from a period overlapping the test window. Changed after some runs of the first matrix had finished; the effect is one sentence of context. |
 | Nov 13, afternoon | Weather inputs in the backtest switched from stitched near-final values to forecasts issued before the issue time | Our own checker found that most of the first formula's 24-hour gain (5.1 cm without weather terms, 3.7 cm with) came from weather values that were not available at the issue time. The live sealed forecasts were not affected. |

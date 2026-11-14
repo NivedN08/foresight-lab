@@ -12,14 +12,14 @@ We built an AI research lab that is graded by the future: it cuts itself off at 
 "Right now the Pacific at the Golden Gate is about half a metre higher than the official tide table says. Tide tables predict astronomy, not the ocean's mood. And when anyone claims an AI can forecast, you can't tell whether it predicted or remembered. So we made it predict things that haven't happened yet."
 
 **0:20 Live proof (40 s).** Dashboard, Coast view.
-"Every fifteen minutes the lab seals forecasts for 23 tide gauges, one to twenty-four hours ahead, in a hash chain. It can't edit them afterwards. Then NOAA's gauges grade them. Magenta is what we sealed; ink is what the sea did; blue is the tide table."
+"Every hour the lab seals forecasts for 23 tide gauges, one to twenty-four hours ahead, in a hash chain, and every fifteen minutes it grades the ones that have come due. It can't edit them afterwards. Then NOAA's gauges grade them. Magenta is what we sealed; ink is what the sea did; blue is the tide table."
 Point at a filled seal mark; hover it: sealed time, predicted level, measured level.
-Number to say: sealed forecasts graded so far, tide table error vs ours. **[final]** (Friday evening: 1 hour ahead, tide table 54 cm, ours 2.7 cm on 92 forecasts; 3 hours ahead, 54.5 cm vs 3.9 cm on 46.)
+Number to say: sealed forecasts graded so far, tide table error vs the lab's forecaster (`Lab:` models on the scoreboard), next to the best simple rule. **[final]** (Friday evening, before any lab forecast had been graded: at 1 hour the tide table was off by 54.2 cm, "the gap continues" by 2.72 cm, its damped version by 2.62 cm and the hand-written starting formula by 2.66 cm, on 92 forecasts; at 3 hours 54.5, 4.94, 4.46 and 3.9 cm on 46. These are the hand-written formula's numbers, not the lab's.)
 
 **1:00 How the lab works (30 s).** Dashboard, Lab view.
 "The forecaster is a readable Python formula. Agents read the literature, pick one idea, change one thing, and the change is tested on the past: fit on one window, kept only if it wins on a later window and doesn't lose on a still later one. The agents never see those answers; the code runs in a sandbox with no network and no files."
 Show the score curve stepping down and the ledger of claims with sources.
-Number to say: changes tested, changes kept, error before and after. **[final]** (First long run: 2.80 to 2.44 cm on the selection window and 3.24 to 2.74 cm on the confirmation window in 17 generations, about $14.)
+Number to say: changes tested, changes kept, error before and after. **[final]** (First long run, 18 generations, $15: 108 changes tested, 12 passed the rule, 8 were adopted; error 2.80 to 2.44 cm on the selection window and 3.24 to 2.74 cm on the confirmation window. The lab sees its score on both windows, so the clean number is the test window.)
 
 **1:30 Evidence (50 s).** One table each, about ten seconds.
 - Test window, scored once: lab vs starting formula vs best simple rule vs tide table. **[final]**
@@ -28,7 +28,7 @@ Number to say: changes tested, changes kept, error before and after. **[final]**
 - Memory: none, full context, vector store, past.dev; error, minutes and dollars to a fixed target. **[final]**
 
 **2:20 Limits (20 s).**
-"Three things we want you to know. One: our own checker caught our first backtest using weather that wasn't available at the time; fixed, and the 24-hour number went from 3.7 to 4.0 cm. Two: at one hour ahead, 'the current gap continues' is as good as anything; the lab earns its keep from three hours out. Three: it's one season and one weekend."
+"Three things we want you to know. One: our own checker caught our first backtest using weather that wasn't available at the time; fixed, and the 24-hour number went from 3.7 to 4.0 cm. Two: the hand-written starting formula is no better than 'the current gap continues' at one hour ahead; whether the lab's forecaster is better there is decided by the test window and the sealed forecasts, and we show whichever it is. Three: it's one season and one weekend."
 
 **2:40 Next (20 s).**
 "The same lab ran on [Pacific's GPU prices] this weekend: here are its sealed forecasts for next week's prices. The chain keeps running after we leave, so you can check us."
@@ -51,8 +51,8 @@ If the network dies: the dashboard reads local files and keeps working; the back
 |---|---|
 | Doesn't the model already know the answer? | The targets are gauge readings and pilot reports that do not exist when the forecast is sealed. For the backtest, the agents never see truths outside the training window, and weather inputs come from runs that existed at the time. |
 | Is the tide table really off by that much? | Yes. We recomputed it from raw NOAA data: a steady positive offset at every West Coast gauge this season, about 24 cm at San Francisco over 90 days and more in November. In the same weeks of 2024 and 2025 it was 0 to 8.5 cm. |
-| Isn't "the gap continues" doing all the work? | At one hour, yes, and we show it. From three hours out the lab's formula is better, and the baseline is on every table. |
-| How do you know the lab's gain isn't overfitting? | A change must win on one later window and not lose on another, with statistics that resample whole station-days. The final window is scored once, with the code hash recorded. |
+| Isn't "the gap continues" doing all the work? | It is a strong baseline and it is on every table. The hand-written starting formula only beats it from three hours out. On the selection and confirmation windows the lab's forecaster beats it at every lead, including one hour (1.46 vs 1.69 cm and 1.59 vs 2.04 cm); the test window and the sealed forecasts say whether that holds. **[final]** |
+| How do you know the lab's gain isn't overfitting? | A change must win on one later window and not lose on another, with statistics that resample whole station-days. The lab does see its scores on both of those windows, so they are somewhat optimistic. The final window is never shown to the lab and is scored once, with the code hash recorded. |
 | Could the agents cheat? | Their code gets no truths for the windows it is judged on, no network and no files. Blocked attempts are logged. |
 | What did search add? | Every tested idea is logged with its source and whether the model already knew it. The ledger includes the failures. **[final numbers]** |
 | Why not a neural network? | Forecast offices and operators need rules they can read and audit, and a formula with a dozen coefficients can be refit every hour on a laptop. |

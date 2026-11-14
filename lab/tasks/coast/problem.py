@@ -532,8 +532,9 @@ def render_description(problem: CoastWaterProblem, sp: Splits, table: dict) -> s
     (San Diego to Seattle) at `target_time`, given only what was known at `issue_time`.
     Leads are 1, 3, 6, 12 and 24 hours. `predict(case)` returns `{{"residual_m": float}}`.
 
-    Note: this season the tide table is off by about +24 to +32 cm on average (an unusually high
-    sea-level season; the offset is positive at every gauge and has risen since summer), so
+    Note: this season the tide table is off by roughly +15 to +25 cm on average in the training
+    and selection periods (an unusually high sea-level season; the offset is positive at every
+    gauge and has risen since summer), so
     "residual = 0" is a poor forecast and the gauge's recent mean matters a lot.
 
     ## Loss

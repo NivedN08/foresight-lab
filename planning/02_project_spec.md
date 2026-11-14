@@ -12,7 +12,7 @@ Forecasts for many physical systems are made with formulas that were tuned once 
 
 This lab removes both excuses. It tests ideas from the literature against measurements, keeps only what holds up on later data, and then commits to forecasts whose answers do not exist yet.
 
-**Headline case.** This autumn the sea on the US West Coast is running far above the official tide tables (about 32 cm on average over 90 days across 23 gauges, more than 50 cm at San Francisco on Nov 13). Tide tables predict astronomy, not weather or the season's ocean state. Harbor masters, coastal road crews and flood-warning offices need the real level a few hours to a day ahead.
+**Headline case.** This autumn the sea on the US West Coast is running far above the official tide tables (across 23 gauges the mean gap grew from about 16 cm in late summer to about 32 cm between Oct 26 and Nov 13; San Francisco read more than 50 cm above the table on Nov 13). Tide tables predict astronomy, not weather or the season's ocean state. Harbor masters, coastal road crews and flood-warning offices need the real level a few hours to a day ahead.
 
 ## What the system is
 
@@ -67,7 +67,7 @@ A single readable Python file: a class with `fit` (estimate coefficients from pa
 ## What "graded by the future" means in practice
 
 - **Rewind test.** Windows are cut by time. Weather inputs come from forecast runs that existed at the issue time.
-- **Sealed forecasts.** Every 15 minutes the live job seals forecasts for 1, 3, 6, 12 and 24 hours ahead at every gauge, for every model, and grades the ones that have come due against the gauge reading.
+- **Sealed forecasts.** Once an hour the live job seals forecasts for 1, 3, 6, 12 and 24 hours ahead at every gauge, for every model. Every 15 minutes it grades the ones that have come due against the gauge reading.
 
 ## Results so far (rehearsal, Nov 13)
 
@@ -75,16 +75,17 @@ All numbers below come from commands in the repo. Test-window results are not ye
 
 | What | Result |
 |---|---|
-| Official tide table, backtest test window | 32 cm mean error at every lead |
+| Official tide table, backtest test window (Oct 26 – Nov 13) | 32 cm mean error at every lead |
 | Starting formula vs best simple rule, honest weather, 24 h | 4.0 cm vs 5.1 cm |
-| Lab, 10 generations (14 minutes, about $7) | Error on the select window 2.80 to 2.47 cm; on the confirm window 3.24 to 2.74 cm |
-| Live sealed forecasts, first evening | 1 h: tide table 54 cm, simple rule 2.7 cm, starting formula 2.7 cm (92 forecasts). 3 h: 54.5, 4.9, 3.9 cm (46 forecasts) |
+| Lab, first 10 generations (14 minutes, about $7) | Error on the select window 2.80 to 2.47 cm; on the confirm window 3.24 to 2.74 cm. After 18 generations ($15): 2.44 and 2.74; 108 changes tested, 12 passed, 8 adopted |
+| Live sealed forecasts, first evening, hand-written models only | 1 h: tide table 54.2 cm, "gap continues" 2.72, damped 2.62, starting formula 2.66 (92 forecasts). 3 h: 54.5, 4.94, 4.46, 3.9 (46 forecasts). No lab forecast had been graded yet |
 | Leak found by our own check | With near-final weather the 24 h figure looked like 3.7 cm; fixed to 4.0 cm |
 
 ## Limits
 
 - One season and one weekend. A calm week would show smaller differences.
-- At one hour ahead, "the current gap continues" is as good as anything.
+- At one hour ahead the hand-written starting formula is no better than "the current gap continues". The lab's forecaster is better there on the windows it was selected on; that is not yet confirmed on the test window.
+- The lab sees its scores on the select and confirm windows, so the figures above are somewhat optimistic. Only the test window is untouched.
 - The backtest's weather for the 24-hour lead comes from runs two days old, which is stricter than reality.
 - Pilot reports (turbulence) are biased toward where aircraft fly; that application's first formula does not yet beat the standard index.
 - The lab's gains are measured on windows it selected on; the test window has not been opened.

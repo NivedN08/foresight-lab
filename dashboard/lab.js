@@ -254,7 +254,7 @@ export function create(root, api) {
     if (!detail) { s.textContent = "Reading the run…"; note.textContent = ""; return; }
     const sm = detail.summary || {};
     const curve = Array.isArray(sm.curve) ? sm.curve : [];
-    const f = detail.findings || [];
+    const f = (detail.findings || []).filter((x) => !x.supersedes); // old runs wrote a follow-up row per superseded change
     const unit = shortUnit(lossUnit(detail));
     const u = (v) => `<span class="num">${fmtLoss(v)}${unit ? ` ${esc(unit)}` : ""}</span>`;
     const what = unit ? "error" : "loss";
@@ -266,10 +266,10 @@ export function create(root, api) {
     } else {
       const g = `In ${fmtInt(done)} generation${done === 1 ? "" : "s"}`;
       const a = num(first.confirm), b = num(last.confirm);
-      if (a == null || b == null) text = `${g} the ${what} on later, unseen data is ${NA}.`;
-      else if (b < a) text = `${g} the lab cut the ${what} on later, unseen data from ${u(a)} to ${u(b)}.`;
-      else if (b > a) text = `${g} the ${what} on later, unseen data rose from ${u(a)} to ${u(b)}.`;
-      else text = `${g} the ${what} on later, unseen data stayed at ${u(a)}.`;
+      if (a == null || b == null) text = `${g} the ${what} on the confirmation window is ${NA}.`;
+      else if (b < a) text = `${g} the lab cut the ${what} on the confirmation window from ${u(a)} to ${u(b)}.`;
+      else if (b > a) text = `${g} the ${what} on the confirmation window rose from ${u(a)} to ${u(b)}.`;
+      else text = `${g} the ${what} on the confirmation window stayed at ${u(a)}.`;
       const kept = f.filter((x) => x.accepted === true).length;
       text += ` It tested <span class="num">${fmtInt(f.length)}</span> change${f.length === 1 ? "" : "s"} and kept <span class="num">${fmtInt(kept)}</span>.`;
     }
@@ -279,8 +279,9 @@ export function create(root, api) {
     } else if (st === "stopped_cost_cap") text += " It stopped when it reached its cost cap.";
     else if (st === "failed") text += " The run failed.";
     s.innerHTML = text;
-    note.textContent = "Later, unseen data is the confirm window: cases after the select window that the agents never see. " +
-      "Changes are chosen on the select window; the confirm window is only used to refuse a change that makes it worse." +
+    note.textContent = "The confirmation window is later in time than the selection window. Agent-written code never receives its answers, " +
+      "but the lab does see each change's score on it and refuses changes that do worse there, so this figure is somewhat optimistic. " +
+      "Only the final test window, scored once at the end, is untouched." +
       (unit ? "" : " The run does not state the loss unit.");
   }
 
@@ -306,7 +307,7 @@ export function create(root, api) {
   // ------------------------------------------------------------ curve
 
   function adoptedIn(gen) {
-    const f = (detail && detail.findings) || [];
+    const f = ((detail && detail.findings) || []).filter((x) => !x.supersedes);
     const same = f.filter((x) => x.generation === gen);
     const adopted = same.filter((x) => x.became_incumbent === true);
     if (adopted.length) return { list: adopted, known: true };
@@ -326,7 +327,7 @@ export function create(root, api) {
     const base = baselines(sm);
     $(".curve-legend").innerHTML = `
       <span class="k"><span class="sw-line"></span>Select window</span>
-      <span class="k"><span class="sw-line confirm"></span>Confirm window (later, unseen)</span>
+      <span class="k"><span class="sw-line confirm"></span>Confirmation window (later in time)</span>
       <span class="k"><svg width="12" height="12" viewBox="-6 -6 12 12"><circle r="4" fill="#16283A"/></svg>A change was adopted</span>
       ${base.length ? `<span class="k"><span class="sw-line tide"></span>Baseline</span>` : ""}`;
     if (!curve.length) {
@@ -468,7 +469,7 @@ export function create(root, api) {
     $(".origin-seg").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.origin === ui.origin)));
     const table = $("table.ledger");
     const counts = $(".ledger-counts");
-    const all = (detail && detail.findings) || [];
+    const all = ((detail && detail.findings) || []).filter((x) => !x.supersedes);
     const key = `${ui.runId}|${all.length}|${ui.show}|${ui.origin}|${all.length ? all[all.length - 1].id : ""}`;
     if (!force && key === lastFindingsKey) return;
     lastFindingsKey = key;
