@@ -1,5 +1,7 @@
 # Project spec
 
+> **Status, Nov 13 11:30pm.** The organizers published Track 1's task late on Friday: beat a best-known result in mathematics. This document was written for the coast application, which no longer fits Track 1 (or any track's scoring). The loop, the on-site build order, the rules and the lessons still apply; the problem the loop is pointed at, the demo and the pitch do not. Current facts are in `00_event_brief.md`; candidate math targets are in `10_track1_math_targets.md`.
+
 Working name: **foresight-lab**. Track 1 (Build Your Own Autoresearch Framework). Headline application: the sea on the US West Coast (chosen Nov 13).
 
 This document describes the rehearsal build of Nov 13. The event's rule is that everything is built at the event, so the event repository is written from scratch on site (`09_rebuild_guide.md`); it rebuilds the coast application and the lab, not the turbulence application or the generic time-series adapter.

@@ -1,10 +1,10 @@
 # Event brief: SF AI Research Hackathon
 
-Compiled Nov 13, 2026 from the event page, its Resources tab (read at 10:30pm), the Luma page, organizer posts and sponsor documentation. Items marked "unconfirmed" are not published anywhere we could find and must be asked at kickoff.
+Compiled Nov 13, 2026 from the event page, its Resources tab (read at 10:30pm and again at 11:15pm, when it had changed), the Exa and past.dev challenge briefs, the Luma page, organizer posts and sponsor documentation. Items marked "unconfirmed" are not published anywhere we could find and must be asked at kickoff.
 
 ## Basics
 
-- **When:** Sat Nov 14 (check-in 8:00, kickoff 9:00, hacking from 10:20) to Sun Nov 15 (submissions due 14:30, prizes 18:00).
+- **When:** Sat Nov 14 (doors 9:00, kickoff 9:30, hacking from 10:00) to Sun Nov 15 (submissions due 14:30, prizes 18:00).
 - **Where:** San Francisco, in person only. Every team member must be on site the whole time.
 - **Team:** 3–5 people. Ours: Nived, Smaran, Atul.
 - **Organizer:** Iterate, with Boardy.
@@ -19,7 +19,7 @@ Compiled Nov 13, 2026 from the event page, its Resources tab (read at 10:30pm), 
 
 "Benchmarks, datasets and starter resources for each track" are promised. As of Friday night the Resources tab (behind the event login) had the rules, rubric and schedule but no datasets or starter repos.
 
-**Track for this plan: 1.** Track 2's task turned out to be fixed (GPU prices, two to three years out), so the coast project does not fit it. The Track 1 wording describes our loop step for step.
+**Track for this plan: 1**, whose task was published late on Friday night and is about records in mathematics. See "The tracks, as now published" below.
 
 ## Sponsor challenges (open to every track)
 
@@ -46,58 +46,74 @@ Compiled Nov 13, 2026 from the event page, its Resources tab (read at 10:30pm), 
 
 $250 Modal, $200 Devin, $100 Tinker, $50 Exa, plus OpenAI API credits.
 
-## How it is judged (from the event's Resources tab, read Nov 13 at 10:30pm)
+## How it is judged (Resources tab as of Nov 13, 11:15pm; it changed during the evening)
 
-100 points, five equal criteria of 20 each:
+Five criteria, 20% each:
 
-| Criterion | What we show for it |
+| Criterion | In the organizers' words |
 |---|---|
-| Technicality | Sealed ledger, sandbox, time-ordered windows, block statistics, the research loop |
-| Creativity | Forecasts locked in before the answer exists and graded by measurements we do not control |
-| Usefulness | The sea is running 30 to 55 cm above the tide tables; the event's test-window table says how much the lab's formula cuts the error (in rehearsal: below every simple rule) |
-| Demo | The live chart: sealed versus measured, updating in the room |
-| Track / sponsor alignment | Track 1's own wording, step for step; Exa in the main loop; past.dev as the shared notebook; Modal for sandboxes and the sealing job |
+| Research rigour | clear question, sound experiment design, baselines or ablations, claims backed by results |
+| Novelty | a new idea, method or use case, beyond existing papers and open-source baselines |
+| Results | a measurable result on a real problem or benchmark, ideally against a baseline; a working live demo |
+| Autonomy & self-improvement | how much of the research loop runs without a human; extra credit if it gets better from its own results |
+| Interpretability & reproducibility | decisions can be followed (logs, traces, sources), code runs, failures reported honestly |
 
-**Round 1** (Sunday 14:45, in a room): 5 minutes per team. Pitch 1:30 (the problem, the approach, a high-level scheme), live demo 1:30, questions 2:00.
-**Finals** (Sunday 16:30, on stage): the top 2 of each track, then the challenge winners; 8 to 10 teams; 3 minutes each (pitch 1:30, demo 1:30), no questions.
-**To submit by Sunday 14:30:** a 2-minute demo video, the GitHub repo link, a short description.
+(An earlier version of the page, at 10:30pm, listed Technicality, Creativity, Usefulness, Demo and Track / sponsor alignment. The list above replaced it.)
 
-The organizer's earlier writing about research events still describes what the judges like: experimental design, baselines, honest negative results, "a polished interface or persuasive demo is not enough". It is not the rubric.
+**Round 1** (Sunday 14:45, six rooms): 5 minutes per team: pitch 3:00, questions 2:00. The top 2 of each track go to the finals.
+**Finals** (Sunday 16:30, on stage): 3 minutes per team, pitch and live demo, no questions. Then the challenge winners demo for 2 minutes each. The final panel picks the top 3 overall.
+**To submit by Sunday 14:30:** one track plus any challenges entered; the GitHub repo link; a 2-minute demo video (YouTube, Drive or Loom); a short description.
+**Prizes stack:** track and challenge prizes come on top of the top 3 overall.
 
 ## Rules that bind us
 
-- **"Build entirely during the event. No prior commits to the repo."** The rehearsal repository cannot be submitted, and no file from it goes into the event repository. We start an empty repository after kickoff and write everything there. What we bring is what we learned: the plans, the test designs, which data sources work, and the mistakes already made (`09_rebuild_guide.md`). Numbers from the rehearsal are not event results and are not presented as such.
+- **"Build entirely during the event. No prior commits to the repo."** The rehearsal repository cannot be submitted, and no file from it goes into the event repository. We start an empty repository after kickoff and write everything there. What we bring is what we learned: the plans, the test designs, and the mistakes already made. Numbers from the rehearsal are not event results and are not presented as such.
 - One track per team; sponsor challenges are optional and can all be entered.
 - Open-source libraries, APIs and pre-trained models are allowed if credited.
-- All team members on site for the whole event. Team of 3 to 5, created on the platform's Teams panel; the team list closes Sunday 12:00.
-- Exa challenge: "At least one Exa API call must run in your project's main loop, and your demo must show your sources."
+- All team members on site. Team of 3 to 5, created on the platform's Teams panel; the team list closes Sunday 12:00.
 
-## Tracks in the organizers' words
+## The tracks, as now published
 
-1. **Build Your Own Autoresearch Framework.** "Build a system that runs the research loop on its own: proposes a hypothesis, runs the experiment, reads the result and decides what to try next." **This is the track this plan is for.**
-2. Recursive Self-Improvement by Pacific. "An AI scientist that forecasts H100 and A100 resale and rental prices 2-3 years out, and learns from its own past forecasting errors."
-3. AI Scientist Swarms. "A team of agents that forms hypotheses, runs experiments and actively tries to prove its own results wrong."
-4. World Models by Applied Reality. Brief not posted.
+**Track 1: Build Your Own Autoresearch Framework.** "The question: can your system beat a best-known result in mathematics on its own?" Build "a system that runs the research loop by itself: it picks what to try, runs it, reads the result and decides what to try next, until it beats a record." The reference is Karpathy's autoresearch (an agent edits one training script, runs 5-minute experiments, keeps only changes that lower the validation loss); "take it further, for example with better search over ideas, memory of what failed, multi-objective evaluation, or a new domain." Records to beat: any problem on EinsteinArena (public verifier and live leaderboard), any constant in Terence Tao's table of optimization constants, or any of the 67 problems in the AlphaEvolve repository of problems; "improving a known bound is welcome." Judged on: "how far past the record you get, how new your loop is, and whether we can follow each decision (show the log)."
 
-## Schedule (all times Pacific; venue: 1885 Mission St, San Francisco)
+**Track 2: Recursive Self-Improvement by Pacific: An AI Scientist for GPU Value.** What will H100 and A100 GPUs resell for, and what will cloud rentals cost, in 2 to 3 years? An AI scientist that forms hypotheses about what drives GPU prices, tests them on real data, and improves its own forecasts with each iteration. Three directions: self-improving forecasts; market signals; your own. Pacific supplies a data pack (3.7M+ posted rental offers, price indices, hardware data; cutoff Nov 6) and a starter kit that builds price series, runs baselines and scores forecasts. Scored: forecasts from Nov 6 at 1, 3 and 7 days, against posted rental prices collected after the cutoff, by pinball loss at quantiles 0.1, 0.5 and 0.9, as skill against a last-value baseline. The 2 to 3 year view is argued from public evidence. Submit forecasts in the starter-kit format, one command that reproduces them, and concise findings including what the system learned across iterations. Judged on rigour, useful economic insight, reproducibility and originality.
+
+**Track 3: AI Scientist Swarms.** Can a team of agents reproduce a full computational biology study from raw data better than the best single frontier model? Record to beat: BixBench3, best score 0.523. Judged on score against the record and a single-agent baseline on the same compute budget.
+
+**Track 4: World Models by Applied Reality.** Make an open world model hold together longer; record to beat on PlayWorld.
+
+**What this means for the coast project.** It no longer fits Track 1 as published: Track 1 is now about beating a record in mathematics, and its first judging line is how far past the record the system gets. The coast forecaster fits none of the four tracks' scoring. The loop itself (propose a change, run it in a sandbox, score it with code, keep what wins, log every decision) is what Track 1 asks for; the problem it is pointed at has to change. Candidate math targets are surveyed in `10_track1_math_targets.md`.
+
+## Sponsor challenges, as now published
+
+**Exa.** Requirements: at least one Exa API call (search, contents, find similar, answer, research or Websets) runs in the project's main loop, not only in a side feature; submit a repo link and point to where Exa is called; the demo makes clear what the system found through Exa and how it used it. Judged: Exa is central, "the project would break, or get clearly worse, without search" (30%); research value (25%); creativity (25%); checkable output, "results trace back to real sources, and it works in a live demo" (20%). Their idea for autoresearch agents: an agent that decides what to search next from what it has already found, or that searches prior work to see whether a hypothesis was already tested before spending compute on it.
+
+**past.dev.** A shared memory layer added to the main project. Requirements: more than one agent writes to it; more than one agent reads from it; at least one agent reads data written by a different agent and uses it. "You don't have to prove the memory improves your results: if it didn't, explain why in your README." No metrics, no leaderboard. The README needs a section titled "past.dev challenge" with four headings: Agents (what each writes and reads, its identity and audiences), Layers (which memory technique holds what, and why), Results, Caveats. In round 1, show one read in which an agent uses another agent's data. Judged 1 to 5 on: a real swarm (read boundaries must hold when the judge tests them; "one agent with memory calls is not a swarm"), a memory design with reasons (including the result you expected before the run), evidence (a trace, a boundary that holds, a failure with its explanation), and honesty (caveats in the README, not found by the judge). Judge: past.dev's CEO. Mentor on site. Limits: 1 project, 500 requests a minute, 8,000 tokens per recall; ingestion can be slow, so keep the data to tens of documents. API: write a fact with content, timestamp, identity and audience (202 with an ingestion id; readable when ingestion completes; batch up to 1,000); read with query and identity (optionally "as of" a time); results carry `occurredAt`, `supersededAt` and source excerpts.
+
+**Modal.** Best use for training, inference, or running large numbers of experiments and agent sandboxes in parallel.
+
+## Credits
+
+Modal $250 and Devin $200 per hacker by claim links; Tinker $100 by a personal code; Exa $50 by a sign-up code; past.dev 500,000 credits per team by a code; OpenAI credits to be confirmed. The links and codes are on the Resources tab, not in this repository. Nothing has been redeemed.
+
+## Schedule (all times Pacific; venue: Wefunder, 1885 Mission St, San Francisco)
 
 | When | What |
 |---|---|
-| Sat 08:00 | Check-in, breakfast, team formation |
-| Sat 09:00 | Kickoff and sponsor challenge intros |
-| Sat 10:00 | Talk (personal agents, memory, continual learning) |
-| Sat 10:20 | Hacking begins |
-| Sat 13:00 | Lunch and sponsor office hours |
+| Sat 09:00 | Doors open, check-in, breakfast |
+| Sat 09:30 | Kickoff and sponsor challenge intros |
+| Sat 10:00 | Hacking begins |
+| Sat 12:30 | Lunch and sponsor office hours |
 | Sat 19:00 | Dinner, then overnight hacking |
 | Sun 08:00 | Breakfast |
-| Sun 12:00 | Team list closes on the platform |
+| Sun 12:00 | Lunch; team list closes on the platform |
 | Sun 13:30 | Judging schedule posted on Discord (room and time) |
 | Sun 14:30 | Hacking ends, submissions due |
 | Sun 14:45 | Round 1 |
 | Sun 16:30 | Finals |
 | Sun 18:00 | Prizes and closing |
 
-News is posted on the event's Discord (link on the Resources tab, with the venue Wi-Fi details). Credit claim links for Modal, Devin, Tinker, Exa and OpenAI were still placeholders on Friday night; past.dev API access was "to be confirmed".
+(The past.dev brief gives a start of 08:30 Saturday and awards at 17:30 Sunday; the Resources tab times above are the organizers'.) News is posted on the event's Discord. The opening slides are linked from the Resources tab but were not open to our account on Friday night.
 
 ## Judges worth designing for
 
@@ -117,7 +133,7 @@ News is posted on the event's Discord (link on the Resources tab, with the venue
 
 ## Still to ask at kickoff
 
-1. Can one team win a main prize and a sponsor challenge?
-2. Can Modal credits be pooled into one workspace?
-3. Where are the credit claim links and the past.dev API access?
-4. Is it fine that we rehearsed the design on Friday, given that all code is written at the event? (We will say so in the submission either way.)
+1. Track 1: does "a new domain" in the brief mean a record outside mathematics can count, or must the record be one of the three listed sources?
+2. Track 1: what counts as beating a record on Tao's table or the AlphaEvolve problems: our own verifier output, or an accepted submission?
+3. Can Modal credits be pooled into one workspace?
+4. Is it fine that we rehearsed a design on Friday, given that all code is written at the event? (We will say so in the submission either way.)

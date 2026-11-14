@@ -1,5 +1,7 @@
 # On-site build plan
 
+> **Status, Nov 13 11:30pm.** The organizers published Track 1's task late on Friday: beat a best-known result in mathematics. This document was written for the coast application, which no longer fits Track 1 (or any track's scoring). The loop, the on-site build order, the rules and the lessons still apply; the problem the loop is pointed at, the demo and the pitch do not. Current facts are in `00_event_brief.md`; candidate math targets are in `10_track1_math_targets.md`.
+
 The event's rule is "Build entirely during the event. No prior commits to the repo." So this is the plan, not a fallback. On Saturday at 10:20 we start an empty repository and write everything in it.
 
 **What we bring and what we do not.** We bring what we learned on Friday: this plan, the test lists, which data sources work, and the traps below. We do not bring files. Nothing is copied from the rehearsal repository into the event repository, by hand or by a tool, and the rehearsal's numbers are not event results. The README and the pitch say that the design was rehearsed the day before and that every line in the repository was written at the event.

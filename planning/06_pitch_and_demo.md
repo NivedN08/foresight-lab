@@ -1,5 +1,7 @@
 # Pitch and demo
 
+> **Status, Nov 13 11:30pm.** The organizers published Track 1's task late on Friday: beat a best-known result in mathematics. This document was written for the coast application, which no longer fits Track 1 (or any track's scoring). The loop, the on-site build order, the rules and the lessons still apply; the problem the loop is pointed at, the demo and the pitch do not. Current facts are in `00_event_brief.md`; candidate math targets are in `10_track1_math_targets.md`.
+
 Track 1: Build Your Own Autoresearch Framework. Format from the organizers: round 1 is a 1:30 pitch, a 1:30 live demo and 2:00 of questions; the finals are the same 3 minutes without questions. Also due by Sunday 14:30: a 2-minute demo video, the repository link and a short description.
 
 Numbers marked **[event]** come from the runs made at the event. The figures in square brackets marked "Rehearsal" are Friday's, written here so we know what to expect; they are never said on stage as results. Where the rehearsal itself is the point (the swarm we dropped, the transfer test), say "in Friday's rehearsal".

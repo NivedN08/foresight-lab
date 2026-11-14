@@ -1,5 +1,7 @@
 # Sponsor playbook
 
+> **Status, Nov 13 11:30pm.** The organizers published Track 1's task late on Friday: beat a best-known result in mathematics. This document was written for the coast application, which no longer fits Track 1 (or any track's scoring). The loop, the on-site build order, the rules and the lessons still apply; the problem the loop is pointed at, the demo and the pitch do not. Current facts are in `00_event_brief.md`; candidate math targets are in `10_track1_math_targets.md`.
+
 One section per prize: what the sponsor asked for, what we show, the number to put on the slide, the experiment that produces it, and the honest weak point. Every number comes from a run log; none is filled in by hand.
 
 ## Main prizes (top 3)
