@@ -1,14 +1,18 @@
 """Upper-air fields on a fixed continental-US grid, from Open-Meteo.
 
 Each download is stored as one compressed chunk (cache/turb/fields/*.npz).
-Every valid hour in a chunk carries an "available" time: when that value could
-have been known.
-  * hours after the download time are forecasts, available at the download time;
-  * hours at or before the download time are Open-Meteo's past values, which are
-    its short-lead forecasts stitched together; we treat each as available one
-    hour before its valid time.
-`FieldStore.known_at(t)` merges the chunks using only values available at or
-before t, preferring the most recently available value for each valid hour.
+Every valid hour in a chunk carries an "available" time:
+  * hours after the download time are forecasts, available at the download
+    time (true: the values existed then);
+  * hours at or before the download time are Open-Meteo's past values. These
+    are stitched together from model runs started at or after each valid hour
+    (and those runs may have assimilated aircraft observations). We record them
+    as available one hour before their valid time only so that they can be
+    ordered and merged; that is a convention, not when they really existed.
+    Anything evaluated on these past values is an analysis-time
+    (hindsight-field) comparison, not a forecast test.
+`FieldStore.known_at(t)` merges the chunks using only values recorded as
+available at or before t, preferring the most recently available value.
 """
 from __future__ import annotations
 
@@ -125,6 +129,8 @@ class FieldStore:
 
 # ---------------------------------------------------------------- download
 def _availability(times: np.ndarray, fetched_at: datetime) -> np.ndarray:
+    """Forecast hours: the download time. Past (hindsight) hours: one hour before
+    the valid time, a bookkeeping convention (see the module docstring)."""
     f = _to_epoch(fetched_at)
     return np.where(times <= f, times - 3600, f).astype(np.int64)
 

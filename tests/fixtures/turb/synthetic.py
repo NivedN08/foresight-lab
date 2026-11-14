@@ -39,11 +39,20 @@ def reports(start: datetime, end: datetime, per_hour: int = 30, seed: int = 0) -
     p_mog = 1 / (1 + np.exp(-(-1.5 + 3.0 * np.exp(-((lat - 38) / 5) ** 2))))
     mog = rng.random(n) < p_mog
     code = np.where(mog, rng.choice([4, 4, 5, 6], n), rng.choice([0, 2, 2, 3], n))
+    words = {0: "NEG", 2: "LGT", 3: "LGT-MOD", 4: "MOD", 5: "MOD-SEV", 6: "SEV"}
     return pd.DataFrame({
         "time": pd.to_datetime([start + timedelta(seconds=float(s)) for s in secs], utc=True).floor("min"),
         "lat": lat.round(3), "lon": lon.round(3), "fl": fl, "code": code.astype(float),
-        "raw": [f"SYN UA /OV XYZ/TM 0000/FL{int(f):03d}/TP B738/TB {'MOD' if m else 'LGT'}" for f, m in zip(fl, mog)],
-        "source": "synthetic"})
+        "raw": [f"SYN UA /OV {a:.3f},{b:.3f}/TM 0000/FL{int(f):03d}/TP B738/TB {words[int(c)]}"
+                for a, b, f, c in zip(lat, lon, fl, code)],
+        "source": "synthetic", "layer": 0})
+
+
+def report_rows(layers: pd.DataFrame) -> pd.DataFrame:
+    """The same synthetic reports as received from a source (one row per report)."""
+    out = layers[["time", "lat", "lon", "raw", "source"]].copy()
+    out["ac_fl"] = layers["fl"].to_numpy()
+    return out[["time", "lat", "lon", "ac_fl", "raw", "source"]]
 
 
 T0 = datetime(2026, 11, 13, 12, 10, tzinfo=timezone.utc)

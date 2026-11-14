@@ -202,13 +202,76 @@ def _coords(points: list[tuple[float, float]]) -> str:
 def fetch_weather(client: Client, points: list[tuple[float, float]], past_days: int = 92,
                   ttl: float = 3600.0) -> list[pd.DataFrame] | None:
     """Hourly pressure_msl (hPa) and 10 m wind (m/s, direction from) per point.
-    Returns None if the service cannot be reached and nothing is cached."""
+    Returns None if the service cannot be reached and nothing is cached.
+
+    Values after the request time are a real forecast (what the live loop uses).
+    Values before it are short-lead forecasts stitched together, close to an
+    analysis: using them as "the forecast at issue time" in a backtest leaks the
+    future. For history use `fetch_weather_runs`."""
     url = (f"{OM_WEATHER}?{_coords(points)}&hourly=pressure_msl,wind_speed_10m,wind_direction_10m"
            f"&wind_speed_unit=ms&past_days={past_days}&forecast_days=3&timezone=GMT")
     try:
         return parse_open_meteo(client.get_text(url, ttl=ttl))
     except Exception as e:  # graceful degradation: models run on gauge data alone
         client.log.append(f"weather unavailable: {e}")
+        return None
+
+
+OM_PREVIOUS_RUNS = "https://previous-runs-api.open-meteo.com/v1/forecast"
+WEATHER_VARS = ("pressure_msl", "wind_speed_10m", "wind_direction_10m")
+MARINE_VARS = ("wave_height", "wave_period")
+RUN_OFFSETS = (1, 2)
+
+
+def _split_runs(dfs: list[pd.DataFrame], variables, offsets) -> dict[int, list[pd.DataFrame]]:
+    """Columns `<var>_previous_day<k>` -> {k: [DataFrame with plain <var> columns, per location]}."""
+    out = {}
+    for k in offsets:
+        out[k] = [df[[f"{v}_previous_day{k}" for v in variables]].rename(
+            columns={f"{v}_previous_day{k}": v for v in variables}) for df in dfs]
+    return out
+
+
+def _range_ttl(end: date, now: datetime) -> float | None:
+    """A date range that ended more than two days ago never changes again."""
+    return None if end < now.date() - timedelta(days=2) else 3600.0
+
+
+def fetch_weather_runs(client: Client, points: list[tuple[float, float]], start: date, end: date,
+                       now: datetime, offsets=RUN_OFFSETS) -> dict[int, list[pd.DataFrame]] | None:
+    """Honest weather history from the Open-Meteo Previous Runs API.
+
+    `_previous_day<k>` is the value for a valid hour as forecast by a model run
+    initialised at least 24*k hours before that hour (checked 2026-11-13: for
+    valid hours too far in the future to have such a run, the API repeats the
+    newest forecast instead, so only valid hours up to now are used). Returns
+    {k: [hourly DataFrame with pressure_msl, wind_speed_10m, wind_direction_10m]
+    per point}, or None if the service cannot be reached and nothing is cached.
+    """
+    hourly = ",".join(f"{v}_previous_day{k}" for k in offsets for v in WEATHER_VARS)
+    url = (f"{OM_PREVIOUS_RUNS}?{_coords(points)}&hourly={hourly}&wind_speed_unit=ms"
+           f"&start_date={start:%Y-%m-%d}&end_date={end:%Y-%m-%d}&timezone=GMT")
+    try:
+        return _split_runs(parse_open_meteo(client.get_text(url, ttl=_range_ttl(end, now))),
+                           WEATHER_VARS, offsets)
+    except Exception as e:
+        client.log.append(f"weather previous runs unavailable: {e}")
+        return None
+
+
+def fetch_marine_runs(client: Client, points: list[tuple[float, float]], start: date, end: date,
+                      now: datetime, offsets=RUN_OFFSETS) -> dict[int, list[pd.DataFrame]] | None:
+    """Honest wave-model history: the marine API's own `_previous_day<k>`
+    variables (same meaning as for weather). {k: [DataFrame with wave_height,
+    wave_period per point]} or None."""
+    hourly = ",".join(f"{v}_previous_day{k}" for k in offsets for v in MARINE_VARS)
+    url = (f"{OM_MARINE}?{_coords(points)}&hourly={hourly}"
+           f"&start_date={start:%Y-%m-%d}&end_date={end:%Y-%m-%d}&timezone=GMT")
+    try:
+        return _split_runs(parse_open_meteo(client.get_text(url, ttl=_range_ttl(end, now))),
+                           MARINE_VARS, offsets)
+    except Exception as e:
+        client.log.append(f"marine previous runs unavailable: {e}")
         return None
 
 

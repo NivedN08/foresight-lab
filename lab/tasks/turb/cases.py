@@ -1,14 +1,24 @@
 """Turn pilot reports into Cases.
 
-One Case per report. The issue time is the start of the report's hour; the
-target time is the report time. The inputs are the diagnostics interpolated to
-the report's position, pressure (flight level through the standard atmosphere)
-and time, computed only from field values available at the issue time (see
-fields.py for what "available" means). The truth (intensity code and class)
-is kept outside the Case.
+One Case per labelled report layer. The issue time is the start of the
+report's hour; the target time is the report time. The inputs are the
+diagnostics interpolated to the layer's position, pressure (flight level
+through the standard atmosphere) and time, built only from field values whose
+recorded "available" time is at or before the issue time.
+
+What that guarantees depends on the fields. For live forecast downloads it is
+real: those values existed at the download time. For the history (Open-Meteo's
+past values) the available time is a bookkeeping convention, not a fact: the
+stitched history comes from model runs started at or after each valid hour,
+which may have assimilated the very aircraft observations being predicted.
+Cases built on history are therefore an analysis-time (hindsight-field)
+comparison of indices: fair between models, because all share the same
+inputs, but not evidence of forecast skill. The truth (intensity code and
+class) is kept outside the Case.
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -45,9 +55,10 @@ def point_features(diag: dict, fs: F.FieldSet, t, p, lat, lon) -> dict[str, np.n
 
 
 def build_cases(reports: pd.DataFrame, chunks: list[F.FieldSet], log=None):
-    """Cases and truths for every report whose two surrounding field hours were
-    available at its issue time. Returns (cases, truths, skipped count)."""
+    """Cases and truths for every report layer whose two surrounding field hours
+    are recorded as available at its issue time. Returns (cases, truths, skipped)."""
     cases, truths = [], []
+    seen: dict[str, int] = {}
     skipped = 0
     if reports.empty:
         return cases, truths, 0
@@ -65,7 +76,14 @@ def build_cases(reports: pd.DataFrame, chunks: list[F.FieldSet], log=None):
         feats = point_features(diag, fs, t, p, grp["lat"].to_numpy(float), grp["lon"].to_numpy(float))
         for j, (_, r) in enumerate(grp.iterrows()):
             target = r["time"].to_pydatetime()
-            cid = f"turb-{target:%Y%m%dT%H%M}-{r['lat']:.2f}-{r['lon']:.2f}-FL{int(r['fl'])}"
+            digest = hashlib.sha1(f"{r['raw']}|{r['source']}".encode()).hexdigest()[:8]
+            layer = int(r["layer"]) if "layer" in r and r["layer"] == r["layer"] else 0
+            cid = f"turb-{target:%Y%m%dT%H%M}-{r['lat']:.3f}-{r['lon']:.3f}-FL{int(r['fl'])}-{digest}-L{layer}"
+            if cid in seen:  # identical rows that survived de-duplication stay distinct
+                seen[cid] += 1
+                cid = f"{cid}-{seen[cid]}"
+            else:
+                seen[cid] = 0
             inputs = {"lat": float(r["lat"]), "lon": float(r["lon"]), "fl": float(r["fl"]),
                       "pressure_hpa": float(p[j]),
                       "features": {k: float(feats[k][j]) for k in DIAGNOSTICS}}

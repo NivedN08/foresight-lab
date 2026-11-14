@@ -31,11 +31,14 @@ def parse_gairmets(items: list[dict]) -> list[dict]:
     return out
 
 
-def fetch_gairmets(log=print) -> list[dict]:
+def fetch_gairmets(log=print, now: datetime | None = None) -> list[dict]:
+    from .pireps import save_raw
     polys = []
     for fore in (0, 3, 6, 9, 12):
         r = net.get("https://aviationweather.gov/api/data/gairmet",
                     params={"format": "json", "hazard": "turb-hi", "fore": fore}, min_gap=1.0, log=log)
+        if now is not None:
+            save_raw("gairmet", r.text, now, suffix=f"_f{fore:02d}")
         items = r.json() if r.text.strip() else []
         if isinstance(items, list):
             polys.extend(parse_gairmets(items))

@@ -9,7 +9,12 @@ from .water import StationData
 
 
 def load_stations(client: Client, now: datetime, days: int, stations=None,
-                  with_weather: bool = True, log=print) -> dict[str, StationData]:
+                  with_weather: bool = True, log=print, weather_runs: bool = False) -> dict[str, StationData]:
+    """Gauge, tide table and weather per station, for `days` days up to `now`.
+
+    `weather_runs=True` also loads the leak-free Previous Runs weather
+    (StationData.weather_runs) that backtests and the lab's Problem must use;
+    the live loop leaves it off and uses the forecast endpoint as before."""
     stations = stations or S.STATIONS
     meta = S.fetch_station_meta(client)
     begin = now - timedelta(days=days + 4)
@@ -33,4 +38,13 @@ def load_stations(client: Client, now: datetime, days: int, stations=None,
         else:
             for sd, w in zip(out.values(), wx):
                 sd.weather = w
+    if weather_runs and out:
+        pts = [(sd.lat, sd.lon) for sd in out.values()]
+        runs = S.fetch_weather_runs(client, pts, (now - timedelta(days=days + 4)).date(), now.date(),
+                                    S.now_utc())
+        if runs is None:
+            log("  previous-run weather unavailable: honest backtests run on gauge data alone")
+        else:
+            for j, sd in enumerate(out.values()):
+                sd.weather_runs = {k: dfs[j] for k, dfs in runs.items()}
     return out

@@ -10,6 +10,16 @@ Forecasters:
                    persistence, and an upstream term: the wave height an
                    offshore buoy saw earlier, delayed by the deep-water swell
                    travel time (group speed g T / (4 pi), T = dominant period).
+                   In the backtests the fitted weight of the upstream term is
+                   near zero (-0.03 to +0.02): it contributes about nothing.
+
+Wave model history. The marine endpoint's past values are short-lead model
+runs stitched together (hindsight): fine for a live issue time, a leak in a
+backtest. `load_buoys(..., model_runs=True)` also loads the marine API's
+`_previous_day<k>` series, the value forecast by a run at least 24*k hours
+before each valid hour; `build_wave_case(..., model="runs")` uses them. The
+default "auto" uses the runs when loaded (backtest) and the endpoint otherwise
+(live loop, unchanged).
 """
 from __future__ import annotations
 
@@ -27,6 +37,7 @@ from lab.core.timeutil import from_iso, to_iso
 
 from . import sources as S
 from .http import Client, FetchError
+from .water import run_offset_days
 
 TASK = "coast_waves"
 LEADS = (1, 3, 6, 12, 24)
@@ -98,7 +109,8 @@ class Upstream:
 
 class BuoyFeatures:
     def __init__(self, bid: str, meta: dict, obs: pd.DataFrame, model: pd.DataFrame | None,
-                 upstream: Upstream | None, start: pd.Timestamp, end: pd.Timestamp):
+                 upstream: Upstream | None, start: pd.Timestamp, end: pd.Timestamp,
+                 model_runs: dict[int, pd.DataFrame] | None = None):
         self.id, self.meta, self.obs_df = bid, meta, obs
         self.start = start.floor(f"{STEP_MIN}min")
         self.grid = pd.date_range(self.start, end.ceil(f"{STEP_MIN}min"), freq=f"{STEP_MIN}min")
@@ -115,6 +127,20 @@ class BuoyFeatures:
             self.model_h = m.to_numpy(float)
             self.model = m
         self.upstream = upstream
+        # leak-free model history: {k: (epoch times, heights)} from previous runs
+        self.model_runs: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        for k, df in (model_runs or {}).items():
+            if df is not None and "wave_height" in df and df["wave_height"].notna().sum() > 24:
+                m = df["wave_height"].dropna()
+                self.model_runs[int(k)] = (np.array([_epoch(t) for t in m.index]), m.to_numpy(float))
+
+    def model_series(self, lead_h: float, model: str = "auto"):
+        """(times, heights) of the wave-model source a case with this lead may use."""
+        if model not in ("auto", "runs", "hindsight"):
+            raise ValueError(f"model must be auto, runs or hindsight, got {model!r}")
+        if model == "runs" or (model == "auto" and self.model_runs):
+            return self.model_runs.get(run_offset_days(lead_h))
+        return (self.model_t, self.model_h) if self.model is not None else None
 
     def index(self, t) -> int:
         return int(round((_epoch(t) - self.t0) / (STEP_MIN * 60)))
@@ -144,7 +170,7 @@ def current_height(f: BuoyFeatures, i: int, max_age_steps: int = 3 * PER_HOUR):
     return float(vals.mean()), int((len(seg) - 1 - newest) * STEP_MIN)
 
 
-def build_wave_case(f: BuoyFeatures, issue: datetime, lead_h: int) -> Case | None:
+def build_wave_case(f: BuoyFeatures, issue: datetime, lead_h: int, model: str = "auto") -> Case | None:
     i = f.index(issue)
     if i < 0 or i >= f.n:
         return None
@@ -156,7 +182,12 @@ def build_wave_case(f: BuoyFeatures, issue: datetime, lead_h: int) -> Case | Non
     up, up_hours = (float("nan"), float("nan"))
     if f.upstream is not None:
         up, up_hours = f.upstream.at(_epoch(issue), _epoch(target))
-    m_t, m_i = f.model_at(target), f.model_at(issue)
+    src = f.model_series(lead_h, model)
+    if src is None:
+        m_t = m_i = float("nan")
+    else:
+        m_t = float(np.interp(_epoch(target), src[0], src[1], left=np.nan, right=np.nan))
+        m_i = float(np.interp(_epoch(issue), src[0], src[1], left=np.nan, right=np.nan))
     inputs = {"buoy": f.id, "lead_h": lead_h, "h_now": h0, "h_age_min": age,
               "h_mean": float(f.h_mean[i]), "model_target": m_t, "model_issue": m_i,
               "has_model": not (np.isnan(m_t) or np.isnan(m_i)),
@@ -166,7 +197,8 @@ def build_wave_case(f: BuoyFeatures, issue: datetime, lead_h: int) -> Case | Non
     return Case(f"{f.id}|{issue:%Y%m%dT%H%MZ}|{lead_h}h", issue, target, inputs)
 
 
-def build_wave_history(feats: dict[str, BuoyFeatures], start: datetime, end: datetime, leads=LEADS):
+def build_wave_history(feats: dict[str, BuoyFeatures], start: datetime, end: datetime, leads=LEADS,
+                       model: str = "auto"):
     cases, truths = [], []
     for f in feats.values():
         t = pd.Timestamp(start).ceil("h").to_pydatetime()
@@ -178,7 +210,7 @@ def build_wave_history(feats: dict[str, BuoyFeatures], start: datetime, end: dat
                 tr = f.truth_at(target)
                 if tr is None:
                     continue
-                c = build_wave_case(f, t, h)
+                c = build_wave_case(f, t, h, model=model)
                 if c is None:
                     continue
                 cases.append(c)
@@ -266,7 +298,7 @@ def all_wave_models():
 
 
 # --------------------------------------------------------------------- data
-def load_buoys(client: Client, now: datetime, days: int, log=print):
+def load_buoys(client: Client, now: datetime, days: int, log=print, model_runs: bool = False):
     meta = parse_buoy_meta(client.get_text(BUOY_META_URL, ttl=30 * 86400.0))
     raw = {}
     for b in COASTAL + OFFSHORE:
@@ -284,6 +316,11 @@ def load_buoys(client: Client, now: datetime, days: int, log=print):
     model = S.fetch_marine(client, pts, past_days=min(92, days + 3)) if pts else None
     if model is None:
         log("  wave model unavailable: SeedSwell runs on buoy data alone")
+    runs = None
+    if model_runs and pts:
+        runs = S.fetch_marine_runs(client, pts, (now - timedelta(days=days + 4)).date(), now.date(), S.now_utc())
+        if runs is None:
+            log("  previous-run wave model unavailable: honest backtest runs on buoy data alone")
     start = pd.Timestamp(now) - pd.Timedelta(days=days + 4)
     end = pd.Timestamp(now) + pd.Timedelta(days=2)
     feats = {}
@@ -295,7 +332,8 @@ def load_buoys(client: Client, now: datetime, days: int, log=print):
             o = min(offs, key=lambda o: great_circle_m(m["lat"], m["lon"], meta[o]["lat"], meta[o]["lon"]))
             dist = great_circle_m(m["lat"], m["lon"], meta[o]["lat"], meta[o]["lon"])
             up = Upstream(o, raw[o], dist)
-        feats[b] = BuoyFeatures(b, m, raw[b], model[k] if model else None, up, start, end)
+        feats[b] = BuoyFeatures(b, m, raw[b], model[k] if model else None, up, start, end,
+                                model_runs={j: dfs[k] for j, dfs in runs.items()} if runs else None)
     offshore = {o: raw[o] for o in OFFSHORE if o in raw}
     return feats, offshore, meta
 

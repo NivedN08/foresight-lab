@@ -1,10 +1,17 @@
 """Backtest the water-level forecasters on recent history.
 
-    .venv/bin/python -m lab.tasks.coast.backtest --days 90
+    .venv/bin/python -m lab.tasks.coast.backtest --days 90 --until 2026-11-13T22:00:00Z
 
 Cases are hourly issue times at every station for leads 1, 3, 6, 12, 24 h.
 They are split by time (train / validation / test); models are fitted on the
 train part and scored on the test part. Error is absolute error in cm.
+
+Weather inputs come from the Open-Meteo Previous Runs archive by default
+(`--weather runs`): every value in a case's lead window is from a model run
+that was already published at the issue time. `--weather hindsight` reproduces
+the old, leaky numbers (stitched short-lead forecasts, close to what actually
+happened) and `--weather none` switches the weather terms off. `--until` fixes
+the end of the data so a run can be repeated.
 """
 from __future__ import annotations
 
@@ -19,7 +26,7 @@ import pandas as pd
 
 from lab.core.stats import bootstrap_ci, paired_bootstrap
 from lab.core.task import time_split
-from lab.core.timeutil import to_iso, utcnow
+from lab.core.timeutil import from_iso, to_iso, utcnow
 
 from .data import load_stations
 from .http import Client
@@ -29,9 +36,29 @@ from .water import LEADS, StationFeatures, build_history_cases
 ROOT = Path(__file__).resolve().parents[3]
 OUT = ROOT / "runs" / "coast" / "backtest.json"
 
-WEATHER_NOTE = ("Past weather values from the Open-Meteo forecast API are short-lead forecasts "
-                "stitched together, so backtest skill at long leads is slightly optimistic for "
-                "SeedPhysics. The live sealed forecasts are the clean test.")
+WEATHER_NOTES = {
+    "runs": ("Weather inputs are leak-free: each value in a lead window comes from an Open-Meteo "
+             "model run published before the issue time (Previous Runs archive, run at least "
+             "24 h old for leads up to 18 h, 48 h old for 24 h). The live loop uses the newest "
+             "run, so live weather is fresher than in this backtest."),
+    "hindsight": ("HINDSIGHT WEATHER, NOT A FORECAST TEST: past weather values are short-lead "
+                  "forecasts stitched together, close to what actually happened, so the weather "
+                  "terms see the future and long-lead skill is overstated."),
+    "none": "Weather terms switched off: SeedPhysics uses gauge data only.",
+}
+CORRELATION_NOTE = ("Intervals resample single cases; neighbouring hours and stations are correlated, "
+                    "so the intervals are narrower than they should be.")
+TIDE_NOTE = ("The tide table is off by about 32 cm on average because this is an unusually high "
+             "sea-level season: the offset is positive at every gauge and has been rising since summer "
+             "(San Francisco +24 cm over 90 days, +37 cm in November; the same weeks of 2024 and 2025 "
+             "gave 0 to +8.5 cm).")
+
+
+def note_for(weather: str) -> str:
+    return " ".join([WEATHER_NOTES[weather], CORRELATION_NOTE, TIDE_NOTE])
+
+
+WEATHER_NOTE = note_for("runs")
 
 
 def score(models, test_cases, test_truths):
@@ -44,17 +71,25 @@ def score(models, test_cases, test_truths):
     return errs
 
 
-def run(days: int, now=None, client: Client | None = None, out: Path = OUT, log=print) -> dict:
+def run(days: int, now=None, client: Client | None = None, out: Path = OUT, log=print,
+        weather: str = "runs") -> dict:
     client = client or Client()
+    until_given = now is not None
     now = now or utcnow()
-    log(f"loading {days} days of gauge, tide and weather data ...")
-    stations = load_stations(client, now, days, log=log)
+    log(f"loading {days} days of gauge, tide and weather data until {to_iso(now)} (weather: {weather}) ...")
+    stations = load_stations(client, now, days, log=log, with_weather=(weather == "hindsight"),
+                             weather_runs=(weather == "runs"))
     start = pd.Timestamp(now - timedelta(days=days))
     feats = {sid: StationFeatures(sd, start - pd.Timedelta(days=4), pd.Timestamp(now))
              for sid, sd in stations.items()}
-    weather_ok = sum(f.has_weather for f in feats.values())
+    if weather == "runs":
+        weather_ok = sum(bool(f.runs) for f in feats.values())
+    elif weather == "hindsight":
+        weather_ok = sum(f.has_weather for f in feats.values())
+    else:
+        weather_ok = 0
     log(f"stations: {len(feats)} (weather for {weather_ok})")
-    cases, truths = build_history_cases(feats, start.to_pydatetime(), now)
+    cases, truths = build_history_cases(feats, start.to_pydatetime(), now, weather=weather)
     truth_of = {c.case_id: t for c, t in zip(cases, truths)}
     tr, va, te = time_split(cases, 0.6, 0.2)
     log(f"cases: {len(cases)}  train {len(tr)}  validation {len(va)}  test {len(te)}")
@@ -99,8 +134,9 @@ def run(days: int, now=None, client: Client | None = None, out: Path = OUT, log=
             verdict = "better" if r["high"] < 0 else ("worse" if r["low"] > 0 else "tie")
             row += f" {r['diff_cm']:+6.2f} [{r['low']:+5.2f},{r['high']:+5.2f}] {verdict:<6}"
         log(row)
-    log("(Bootstrap resamples cases independently; neighbouring hours and stations are correlated, "
-        "so the intervals are narrower than they should be.)")
+    log("(" + CORRELATION_NOTE + ")")
+    log("Share of test cases with weather inputs: "
+        f"{sum(c.inputs['has_weather'] for c in te) / max(1, len(te)):.0%}")
     seed: SeedPhysics = next(m for m in models if m.name == "SeedPhysics")
     damped = next(m for m in models if m.name == "DampedPersistence")
     log("")
@@ -117,13 +153,17 @@ def run(days: int, now=None, client: Client | None = None, out: Path = OUT, log=
     else:
         log("Pressure coefficient: not fitted (no weather data).")
     log("")
-    log("Note: " + WEATHER_NOTE)
+    log("Note: " + note_for(weather))
 
     names = {sid: sd.name for sid, sd in stations.items()}
     result = {
         "generated_at": to_iso(utcnow()),
         "data_until": to_iso(now),
+        "until_given": until_given,
         "days": days,
+        "weather": weather,
+        "correlation_note": CORRELATION_NOTE,
+        "tide_note": TIDE_NOTE,
         "stations": names,
         "weather_stations": weather_ok,
         "n_cases": {"train": len(tr), "validation": len(va), "test": len(te)},
@@ -137,7 +177,7 @@ def run(days: int, now=None, client: Client | None = None, out: Path = OUT, log=
                      "trend": float(k["trend"]), "intercept_cm": float(k["intercept"] * 100),
                      "wind_toward_deg_and_cm_per_m2s2": {s: list(v) for s, v in seed.wind_directions(h).items()}}
             for h, k in seed.coef.items()},
-        "note": WEATHER_NOTE,
+        "note": note_for(weather),
         "fetch_log": client.log[-20:],
     }
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -149,8 +189,14 @@ def run(days: int, now=None, client: Client | None = None, out: Path = OUT, log=
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=90)
+    ap.add_argument("--until", help="end of the data, ISO UTC (default: now); makes a run repeatable")
+    ap.add_argument("--weather", choices=("runs", "hindsight", "none"), default="runs")
+    ap.add_argument("--out", type=Path, default=None,
+                    help=f"output JSON (default {OUT.relative_to(ROOT)} for --weather runs, "
+                         "backtest_<weather>.json otherwise)")
     args = ap.parse_args()
-    run(args.days)
+    out = args.out or (OUT if args.weather == "runs" else OUT.with_name(f"backtest_{args.weather}.json"))
+    run(args.days, now=from_iso(args.until) if args.until else None, out=out, weather=args.weather)
 
 
 if __name__ == "__main__":

@@ -1,28 +1,435 @@
 [
- {"raw": "ILM UA /OV ILM180050/TM 2131/FL310/TP A21N/TB CONS LGT OCNL MOD", "code": 3, "fl": 310, "tb_fl": null, "tm": "2131", "note": "light, occasionally moderate: light-moderate"},
- {"raw": "INW UA /OV INW020030/TM 2130/FL360/TP GLEX/TB CONS LGT CHOP/RM ZAB FDCS", "code": 2, "fl": 360, "tb_fl": null, "tm": "2130"},
- {"raw": "000 UBUS31 KWBC 132135 PRCUS ARG UA /OV ARG315030/TM 2129/FL450/TP CL35/TB CONS LGT-MOD CHOP/RM ZME 35", "code": 3, "fl": 450, "tb_fl": null, "tm": "2129", "note": "bulletin header in front"},
- {"raw": "MSL UA /OV MSL360030/TM 2128/FL180/TP E55P/TB LGT CHOP 180-150/RM ZME 14", "code": 2, "fl": 180, "tb_fl": 165, "tm": "2128", "note": "layer 150-180"},
- {"raw": "000 UBGA90 KWBC 132130 GA 132130 AGS UA /OV DNL360005/TM 2127/FL090/TP C310/SK BKN085/TB NEG", "code": 0, "fl": 90, "tb_fl": null, "tm": "2127"},
- {"raw": "MLF UA /OV MLF070105/TM 2123/FL430/TP GA7C/TB MOD /ZLC", "code": 4, "fl": 430, "tb_fl": null, "tm": "2123", "note": "trailing center id after a slash"},
- {"raw": "MSY UA /OV LEV135330/TM 2120/FL330/TP B39M/TB CONS NEG 330/RM ZHU", "code": 0, "fl": 330, "tb_fl": 330, "tm": "2120"},
- {"raw": "SEF UA /OV KMLB220030 /TM 2118 /FL020 /TP S22T /SK SKC /WX FV99SM /TA 17 /TB NEG /IC NEG /RM SMOOTH", "code": 0, "fl": 20, "tb_fl": null, "tm": "2118", "note": "spaces before every slash"},
- {"raw": "ARP UAL627 4140N 07416W 2101 F106 340/002KT TB IC MOD RIME", "code": null, "fl": 106, "tb_fl": null, "tm": null, "note": "airline AIREP: empty turbulence group, MOD belongs to icing"},
- {"raw": "ARP UAL286 5305N 08903W 2022 F390 160/043KT TB CONT SMTH IC", "code": 0, "fl": 390, "tb_fl": null, "tm": null, "note": "airline AIREP"},
- {"raw": "ARP UAL2380 3713N 12305W 2002 F258 286/110KT TB CONT MOD CHOP IC", "code": 4, "fl": 258, "tb_fl": null, "tm": null, "note": "airline AIREP"},
- {"raw": "AAT UA /OV LMT110054 /TM 2045 /FL340 /TP B38M /TB MOD-CHOP-INTMT /RM PRODUCED BY SKYPATH", "code": 4, "fl": 340, "tb_fl": null, "tm": "2045", "note": "hyphens between words"},
- {"raw": "SMF UA /OV SMF/TM 2027/FL020/TP E75L/TB LGT - MOD /RM DURD", "code": 3, "fl": 20, "tb_fl": null, "tm": "2027"},
- {"raw": "VSF UA /OV VSF/TM 2001/FL300/TP CRJ7/TB CONT LGT CHOP 300 NEG 320", "code": 1, "fl": 300, "tb_fl": 310, "tm": "2001", "note": "light at 300, smooth at 320: still light or less"},
- {"raw": "OMA UA /OV OVR100030/TM 2007/FL430/TP GLEX/TB CONS MOD CHOP OCNL LGT", "code": 3, "fl": 430, "tb_fl": null, "tm": "2007"},
- {"raw": "BTV UA /OV ILS 33/TM 0320/FLSFC/TP CRJ9/SK BASES \"DEFINITELY A LITTLE LOWER THAN 038\"/TB LGT", "code": 2, "fl": null, "tb_fl": null, "tm": "0320", "note": "quote marks, surface flight level"},
- {"raw": "SFO UA /OV SFO/TM 2135/FL060/TP B738/RM SCATTERED 060 ON FINAL", "code": null, "fl": 60, "tb_fl": null, "tm": "2135", "note": "no turbulence group"},
- {"raw": "EKO UA /OV BQU340030/TM 2147/FL340/TP E75L/TB MOD CHOP/RM MTW +/-10KT /ZLC", "code": 4, "fl": 340, "tb_fl": null, "tm": "2147"},
- {"raw": "ORF UUA /OV 3520N 06120W/TM 0220/FL350/TP B767/TB EXTRM", "code": 8, "fl": 350, "tb_fl": null, "tm": "0220", "note": "urgent report"},
- {"raw": "GJT UA /OV JNC180020/TM 0300/FL120/TP E170/TB SEV TB/RM +30KTS", "code": 6, "fl": 120, "tb_fl": null, "tm": "0300"},
- {"raw": "DTA UA /OV UTI355015/TM 0302/FL090/TP BE20/TB MOD-SEV CAT 000-090/RM DURD ZLAWC AWC-WEB", "code": 5, "fl": 90, "tb_fl": 45, "tm": "0302", "note": "layer from the surface"},
- {"raw": "IAH UA /OV 50 NE IAH/TM 0600/FL210/TP B739/TB LT TURB AT 210 SMOOTH AT 185", "code": 1, "fl": 210, "tb_fl": 198, "tm": "0600"},
- {"raw": "DTW UA /OV 10 SE DTW/TM 0631/FL90/TP A320/TB SMOOTH", "code": 0, "fl": 90, "tb_fl": null, "tm": "0631", "note": "two-digit flight level"},
- {"raw": "SJU UA /OV SJU18060/TM 0226/FL370/TP A332/TB MODERATE", "code": 4, "fl": 370, "tb_fl": null, "tm": "0226"},
- {"raw": "DVK UA /OV DVK/TM 1127/FL080/TP BE20/TB LIGHT TO MOD FROM 080-090", "code": 3, "fl": 80, "tb_fl": 85, "tm": "1127"},
- {"raw": "PEX UA /OV PEX/TM 0006/FL260/TP A21N/TB NEG BLO 260/RM DURC", "code": 0, "fl": 260, "tb_fl": 260, "tm": "0006"}
+ {
+  "raw": "ILM UA /OV ILM180050/TM 2131/FL310/TP A21N/TB CONS LGT OCNL MOD",
+  "layers": [
+   [
+    3,
+    310
+   ]
+  ],
+  "fl": 310,
+  "tm": "2131",
+  "note": "light, occasionally moderate: light-moderate"
+ },
+ {
+  "raw": "INW UA /OV INW020030/TM 2130/FL360/TP GLEX/TB CONS LGT CHOP/RM ZAB FDCS",
+  "layers": [
+   [
+    2,
+    360
+   ]
+  ],
+  "fl": 360,
+  "tm": "2130"
+ },
+ {
+  "raw": "000 UBUS31 KWBC 132135 PRCUS ARG UA /OV ARG315030/TM 2129/FL450/TP CL35/TB CONS LGT-MOD CHOP/RM ZME 35",
+  "layers": [
+   [
+    3,
+    450
+   ]
+  ],
+  "fl": 450,
+  "tm": "2129",
+  "note": "bulletin header in front"
+ },
+ {
+  "raw": "MSL UA /OV MSL360030/TM 2128/FL180/TP E55P/TB LGT CHOP 180-150/RM ZME 14",
+  "layers": [
+   [
+    2,
+    165
+   ]
+  ],
+  "fl": 180,
+  "tm": "2128",
+  "note": "layer 150-180"
+ },
+ {
+  "raw": "000 UBGA90 KWBC 132130 GA 132130 AGS UA /OV DNL360005/TM 2127/FL090/TP C310/SK BKN085/TB NEG",
+  "layers": [
+   [
+    0,
+    90
+   ]
+  ],
+  "fl": 90,
+  "tm": "2127"
+ },
+ {
+  "raw": "MLF UA /OV MLF070105/TM 2123/FL430/TP GA7C/TB MOD /ZLC",
+  "layers": [
+   [
+    4,
+    430
+   ]
+  ],
+  "fl": 430,
+  "tm": "2123",
+  "note": "trailing center id after a slash"
+ },
+ {
+  "raw": "MSY UA /OV LEV135330/TM 2120/FL330/TP B39M/TB CONS NEG 330/RM ZHU",
+  "layers": [
+   [
+    0,
+    330
+   ]
+  ],
+  "fl": 330,
+  "tm": "2120"
+ },
+ {
+  "raw": "SEF UA /OV KMLB220030 /TM 2118 /FL020 /TP S22T /SK SKC /WX FV99SM /TA 17 /TB NEG /IC NEG /RM SMOOTH",
+  "layers": [
+   [
+    0,
+    20
+   ]
+  ],
+  "fl": 20,
+  "tm": "2118",
+  "note": "spaces before every slash"
+ },
+ {
+  "raw": "ARP UAL627 4140N 07416W 2101 F106 340/002KT TB IC MOD RIME",
+  "layers": [],
+  "fl": 106,
+  "tm": null,
+  "note": "airline AIREP: empty turbulence group, MOD belongs to icing"
+ },
+ {
+  "raw": "ARP UAL286 5305N 08903W 2022 F390 160/043KT TB CONT SMTH IC",
+  "layers": [
+   [
+    0,
+    390
+   ]
+  ],
+  "fl": 390,
+  "tm": null,
+  "note": "airline AIREP"
+ },
+ {
+  "raw": "ARP UAL2380 3713N 12305W 2002 F258 286/110KT TB CONT MOD CHOP IC",
+  "layers": [
+   [
+    4,
+    258
+   ]
+  ],
+  "fl": 258,
+  "tm": null,
+  "note": "airline AIREP"
+ },
+ {
+  "raw": "AAT UA /OV LMT110054 /TM 2045 /FL340 /TP B38M /TB MOD-CHOP-INTMT /RM PRODUCED BY SKYPATH",
+  "layers": [
+   [
+    4,
+    340
+   ]
+  ],
+  "fl": 340,
+  "tm": "2045",
+  "note": "hyphens between words"
+ },
+ {
+  "raw": "SMF UA /OV SMF/TM 2027/FL020/TP E75L/TB LGT - MOD /RM DURD",
+  "layers": [
+   [
+    3,
+    20
+   ]
+  ],
+  "fl": 20,
+  "tm": "2027"
+ },
+ {
+  "raw": "VSF UA /OV VSF/TM 2001/FL300/TP CRJ7/TB CONT LGT CHOP 300 NEG 320",
+  "layers": [
+   [
+    2,
+    300
+   ],
+   [
+    0,
+    320
+   ]
+  ],
+  "fl": 300,
+  "tm": "2001",
+  "note": "two layers: light at 300, smooth at 320"
+ },
+ {
+  "raw": "OMA UA /OV OVR100030/TM 2007/FL430/TP GLEX/TB CONS MOD CHOP OCNL LGT",
+  "layers": [
+   [
+    3,
+    430
+   ]
+  ],
+  "fl": 430,
+  "tm": "2007"
+ },
+ {
+  "raw": "BTV UA /OV ILS 33/TM 0320/FLSFC/TP CRJ9/SK BASES \"DEFINITELY A LITTLE LOWER THAN 038\"/TB LGT",
+  "layers": [],
+  "fl": null,
+  "tm": "0320",
+  "note": "quote marks; surface flight level, so no level for the label"
+ },
+ {
+  "raw": "SFO UA /OV SFO/TM 2135/FL060/TP B738/RM SCATTERED 060 ON FINAL",
+  "layers": [],
+  "fl": 60,
+  "tm": "2135",
+  "note": "no turbulence group"
+ },
+ {
+  "raw": "EKO UA /OV BQU340030/TM 2147/FL340/TP E75L/TB MOD CHOP/RM MTW +/-10KT /ZLC",
+  "layers": [
+   [
+    4,
+    340
+   ]
+  ],
+  "fl": 340,
+  "tm": "2147"
+ },
+ {
+  "raw": "ORF UUA /OV 3520N 06120W/TM 0220/FL350/TP B767/TB EXTRM",
+  "layers": [
+   [
+    8,
+    350
+   ]
+  ],
+  "fl": 350,
+  "tm": "0220",
+  "note": "urgent report"
+ },
+ {
+  "raw": "GJT UA /OV JNC180020/TM 0300/FL120/TP E170/TB SEV TB/RM +30KTS",
+  "layers": [
+   [
+    6,
+    120
+   ]
+  ],
+  "fl": 120,
+  "tm": "0300"
+ },
+ {
+  "raw": "DTA UA /OV UTI355015/TM 0302/FL090/TP BE20/TB MOD-SEV CAT 000-090/RM DURD ZLAWC AWC-WEB",
+  "layers": [
+   [
+    5,
+    45
+   ]
+  ],
+  "fl": 90,
+  "tm": "0302",
+  "note": "layer from the surface"
+ },
+ {
+  "raw": "IAH UA /OV 50 NE IAH/TM 0600/FL210/TP B739/TB LT TURB AT 210 SMOOTH AT 185",
+  "layers": [
+   [
+    2,
+    210
+   ],
+   [
+    0,
+    185
+   ]
+  ],
+  "fl": 210,
+  "tm": "0600",
+  "note": "two layers: light at 210, smooth at 185"
+ },
+ {
+  "raw": "DTW UA /OV 10 SE DTW/TM 0631/FL90/TP A320/TB SMOOTH",
+  "layers": [
+   [
+    0,
+    90
+   ]
+  ],
+  "fl": 90,
+  "tm": "0631",
+  "note": "two-digit flight level"
+ },
+ {
+  "raw": "SJU UA /OV SJU18060/TM 0226/FL370/TP A332/TB MODERATE",
+  "layers": [
+   [
+    4,
+    370
+   ]
+  ],
+  "fl": 370,
+  "tm": "0226"
+ },
+ {
+  "raw": "DVK UA /OV DVK/TM 1127/FL080/TP BE20/TB LIGHT TO MOD FROM 080-090",
+  "layers": [
+   [
+    3,
+    85
+   ]
+  ],
+  "fl": 80,
+  "tm": "1127"
+ },
+ {
+  "raw": "PEX UA /OV PEX/TM 0006/FL260/TP A21N/TB NEG BLO 260/RM DURC",
+  "layers": [
+   [
+    0,
+    260
+   ]
+  ],
+  "fl": 260,
+  "tm": "0006"
+ },
+ {
+  "raw": "HLN UA /OV HLN161022/TM 1626/FL370/TP B738/TB LGT OCNL MOD 370 NEG 390/ZLC",
+  "layers": [
+   [
+    3,
+    370
+   ],
+   [
+    0,
+    390
+   ]
+  ],
+  "fl": 370,
+  "tm": "1626",
+  "note": "checker example family: light-moderate at 370, smooth at 390"
+ },
+ {
+  "raw": "SYR UA /OV SYR/TM 0845/FL330/TP A21N/TB CONS LGT OCNL MOD 330 NEG 350",
+  "layers": [
+   [
+    3,
+    330
+   ],
+   [
+    0,
+    350
+   ]
+  ],
+  "fl": 330,
+  "tm": "0845"
+ },
+ {
+  "raw": "XXX UA /OV XXX/TM 1200/FL370/TP B738/TB CONS LGT OCNL MOD 370 NEG 390",
+  "layers": [
+   [
+    3,
+    370
+   ],
+   [
+    0,
+    390
+   ]
+  ],
+  "fl": 370,
+  "tm": "1200",
+  "note": "constructed around the checker's exact group text"
+ },
+ {
+  "raw": "HYS UA /OV HYS010025/TM 1707/FL465/TP C680/TB CONT LGT -MOD BLO 460 NEG ABV 460/RM /ZKC FDC/AF",
+  "layers": [
+   [
+    0,
+    465
+   ]
+  ],
+  "fl": 465,
+  "tm": "1707",
+  "note": "aircraft at 465: only the NEG ABV 460 layer applies at its level"
+ },
+ {
+  "raw": "XXX UA /OV XXX/TM 1200/FL300/TP B738/TB LGT 240-260 MOD 300-340",
+  "layers": [
+   [
+    2,
+    250
+   ],
+   [
+    4,
+    320
+   ]
+  ],
+  "fl": 300,
+  "tm": "1200",
+  "note": "constructed around the checker's exact group text"
+ },
+ {
+  "raw": "CDV UA /OV CDV/TM 2127/FL155/TP B737/SK TOP280/TB LGT 155-180 MOD 190-275/RM DURC ZAN",
+  "layers": [
+   [
+    2,
+    168
+   ],
+   [
+    4,
+    233
+   ]
+  ],
+  "fl": 155,
+  "tm": "2127",
+  "note": "two ranged layers"
+ },
+ {
+  "raw": "SLC UA /OV KSLC340004/TM 2059/FL070/TP C525/SK OVC070-TOP080 OVC110-TOP120/TA M07/WV 057008KTS/TB LGT CHOP BLW 230/IC NEG/RM DURC RUGGD3",
+  "layers": [
+   [
+    2,
+    70
+   ]
+  ],
+  "fl": 70,
+  "tm": "2059",
+  "note": "bound only: keeps the aircraft's FL070, not moved to the upper levels"
+ },
+ {
+  "raw": "ANC UA /OV TED180010/TM 0803/FL100/TP B739/SK OVC055/TB LGT SFC-060/ LGT ABV 060/RM DEP 25L",
+  "layers": [
+   [
+    2,
+    30
+   ],
+   [
+    2,
+    100
+   ]
+  ],
+  "fl": 100,
+  "tm": "0803",
+  "note": "group continues after a slash"
+ },
+ {
+  "raw": "XXX UA /OV XXX/TM 1200/FL150/TP B738/TB MOD BLO 120",
+  "layers": [],
+  "fl": 150,
+  "tm": "1200",
+  "note": "constructed: the aircraft is not inside the bound, so no level for the label"
+ },
+ {
+  "raw": "SYR UA /OV SYR020020/TM 1654/FL280/TP CRJ9/TB CONS LGT MOD CHOP 280 BLO 275 NEG",
+  "layers": [
+   [
+    3,
+    280
+   ]
+  ],
+  "fl": 280,
+  "tm": "1654",
+  "note": "the bound opens the NEG layer below 275, which does not reach the aircraft at 280"
+ }
 ]

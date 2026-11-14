@@ -113,21 +113,41 @@ def _encode_case(case: Any) -> dict:
     }
 
 
+@dataclass(frozen=True)
+class PreparedCases:
+    """The encoded case part of a payload (train cases, train truths, eval
+    cases), made once and reused for many candidates. Built only by
+    `prepare_cases`, which has no argument for eval truths."""
+    body: bytes
+    n_train: int
+    n_eval: int
+
+
+def prepare_cases(train_cases: Sequence, train_truths: Sequence[dict], eval_cases: Sequence) -> PreparedCases:
+    """Encode the cases once. Eval cases are encoded from their public fields
+    only; there is no truth argument for them, so they cannot carry one."""
+    if len(train_cases) != len(train_truths):
+        raise ValueError(f"{len(train_cases)} train cases but {len(train_truths)} truths")
+    parts = [
+        b'"train_cases": ', json.dumps([_encode_case(c) for c in train_cases], allow_nan=True).encode("utf-8"),
+        b', "train_truths": ', json.dumps([_encode(dict(t)) for t in train_truths], allow_nan=True).encode("utf-8"),
+        b', "eval_cases": ', json.dumps([_encode_case(c) for c in eval_cases], allow_nan=True).encode("utf-8"),
+    ]
+    return PreparedCases(b"".join(parts), len(train_cases), len(eval_cases))
+
+
+def payload_from_prepared(source: str, prepared: PreparedCases) -> bytes:
+    """Exactly the bytes written to the child's input file."""
+    head = json.dumps({"source": source, "allowed_imports": sorted(ALLOWED_IMPORTS)}, allow_nan=True)
+    return head[:-1].encode("utf-8") + b", " + prepared.body + b"}"
+
+
 def build_payload(source: str, train_cases: Sequence, train_truths: Sequence[dict],
                   eval_cases: Sequence) -> bytes:
     """Exactly the bytes written to the child's input file. Eval cases are
     encoded from their public fields only; there is no truth argument for
     them, so they cannot carry one."""
-    if len(train_cases) != len(train_truths):
-        raise ValueError(f"{len(train_cases)} train cases but {len(train_truths)} truths")
-    payload = {
-        "source": source,
-        "allowed_imports": sorted(ALLOWED_IMPORTS),
-        "train_cases": [_encode_case(c) for c in train_cases],
-        "train_truths": [_encode(dict(t)) for t in train_truths],
-        "eval_cases": [_encode_case(c) for c in eval_cases],
-    }
-    return json.dumps(payload, allow_nan=True).encode("utf-8")
+    return payload_from_prepared(source, prepare_cases(train_cases, train_truths, eval_cases))
 
 
 # ----------------------------------------------------------------- platform caps
@@ -307,6 +327,25 @@ def run_candidate(source: str, train_cases: Sequence, train_truths: Sequence[dic
     `skip_lint` and `use_os_sandbox=False` exist only so tests can show what
     the run-time layers catch on their own; production callers leave them.
     """
+    return _run(source, lambda: build_payload(source, train_cases, train_truths, eval_cases),
+                len(eval_cases), time_limit_s=time_limit_s, memory_limit_mb=memory_limit_mb,
+                log_path=log_path, skip_lint=skip_lint, use_os_sandbox=use_os_sandbox)
+
+
+def run_prepared(source: str, prepared: PreparedCases, *, time_limit_s: float = 120,
+                 memory_limit_mb: int = 1024, log_path: str | os.PathLike | None = None) -> SandboxResult:
+    """Same as `run_candidate`, with the cases already encoded by `prepare_cases`
+    (so many candidates on the same cases pay the encoding once). Every
+    protection is the same; only the source changes between runs."""
+    if not isinstance(prepared, PreparedCases):
+        raise TypeError("prepared must come from prepare_cases")
+    return _run(source, lambda: payload_from_prepared(source, prepared), prepared.n_eval,
+                time_limit_s=time_limit_s, memory_limit_mb=memory_limit_mb, log_path=log_path,
+                skip_lint=False, use_os_sandbox=True)
+
+
+def _run(source: str, make_payload, n_eval: int, *, time_limit_s: float, memory_limit_mb: int,
+         log_path, skip_lint: bool, use_os_sandbox: bool) -> SandboxResult:
     t0 = time.monotonic()
     protections: list[str] = []
 
@@ -322,7 +361,7 @@ def run_candidate(source: str, train_cases: Sequence, train_truths: Sequence[dic
             return res
 
     caps = _probe()
-    payload = build_payload(source, train_cases, train_truths, eval_cases)
+    payload = make_payload()
     work = tempfile.mkdtemp(prefix="lab-sbx-")
     try:
         payload_path = os.path.join(work, "input.json")
@@ -339,7 +378,7 @@ def run_candidate(source: str, train_cases: Sequence, train_truths: Sequence[dic
             protections += ["sandbox_exec_no_network", "sandbox_exec_no_file_write",
                             "sandbox_exec_read_allowlist"]
 
-        res = _run_child(cmd, work, time_limit_s, memory_limit_mb, len(eval_cases))
+        res = _run_child(cmd, work, time_limit_s, memory_limit_mb, n_eval)
         res.protections = protections
         res.duration_s = time.monotonic() - t0
     finally:

@@ -428,3 +428,83 @@ def test_state_size_guard_shortens_window(tmp_path, monkeypatch):
     s, clock = _fake_state(tmp_path, monkeypatch, max_bytes=1000)
     frm = datetime.fromisoformat(s["water"]["forecast_window"]["from"].replace("Z", "+00:00"))
     assert clock() - frm == timedelta(hours=2)
+
+
+# ------------------------------------------------- leak-free weather history
+def _with_runs(sd, rng=None, issue=None):
+    """Copy of sd with previous-run weather (k = 1, 2). With `issue`, every value
+    from a run that could have been published after `issue` is corrupted, and the
+    hindsight series is corrupted everywhere."""
+    from lab.tasks.coast.water import RUN_DELAY_H
+    runs = {}
+    for k in (1, 2):
+        w = sd.weather.copy()
+        w["pressure_msl"] = w["pressure_msl"] + 0.5 * k
+        if issue is not None:
+            late = (w.index - pd.Timedelta(hours=24 * k - RUN_DELAY_H)) > pd.Timestamp(issue)
+            w.loc[late, "pressure_msl"] = rng.normal(900, 20, late.sum())
+            w.loc[late, "wind_speed_10m"] = rng.uniform(20, 40, late.sum())
+        runs[k] = w
+    hind = sd.weather.copy()
+    if issue is not None:
+        hind["pressure_msl"] = rng.normal(950, 20, len(hind))
+    return StationData(sd.id, sd.name, sd.lat, sd.lon, sd.obs, sd.tide, hind, runs)
+
+
+@pytest.mark.parametrize("lead", [1, 3, 6, 12, 24])
+@pytest.mark.parametrize("mode", ["runs", "auto"])
+def test_weather_runs_after_issue_cannot_change_inputs(lead, mode):
+    start, end = pd.Timestamp("2026-10-20", tz="UTC"), pd.Timestamp("2026-11-08", tz="UTC")
+    sd = _synthetic_station(start, end)
+    issue = datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc)
+    c1 = build_case(StationFeatures(_with_runs(sd), start, end), issue, lead, weather=mode)
+    assert c1.inputs["has_weather"]
+    bad = _with_runs(sd, np.random.default_rng(1), issue)
+    c2 = build_case(StationFeatures(bad, start, end), issue, lead, weather=mode)
+    assert _inputs_equal(c1.inputs, c2.inputs)
+    # and the hindsight series really differs: using it would have changed the inputs
+    c3 = build_case(StationFeatures(bad, start, end), issue, lead, weather="hindsight")
+    assert not _inputs_equal(c1.inputs, c3.inputs)
+
+
+def test_live_path_without_runs_is_unchanged():
+    """The live loop loads no runs: "auto" must then read the forecast endpoint
+    exactly as before (same numbers as weather="hindsight")."""
+    start, end = pd.Timestamp("2026-10-20", tz="UTC"), pd.Timestamp("2026-11-08", tz="UTC")
+    f = StationFeatures(_synthetic_station(start, end), start, end)
+    issue = datetime(2026, 11, 4, 9, 6, tzinfo=timezone.utc)
+    for lead in (1, 24):
+        a = build_case(f, issue, lead)
+        b = build_case(f, issue, lead, weather="hindsight")
+        assert a.inputs["has_weather"] and _inputs_equal(a.inputs, b.inputs)
+        assert not build_case(f, issue, lead, weather="runs").inputs["has_weather"]
+        assert not build_case(f, issue, lead, weather="none").inputs["has_weather"]
+
+
+@pytest.mark.parametrize("lead", [1, 6, 24])
+def test_wave_model_runs_after_issue_cannot_change_inputs(lead):
+    from lab.tasks.coast.water import RUN_DELAY_H
+    start, end = pd.Timestamp("2026-10-20", tz="UTC"), pd.Timestamp("2026-11-08", tz="UTC")
+    idx = pd.date_range(start, end, freq="30min")
+    obs = pd.DataFrame({"WVHT": [wave_fn(t) for t in idx], "DPD": 14.0}, index=idx)
+    hidx = pd.date_range(start, end + pd.Timedelta(days=2), freq="h")
+    model = pd.DataFrame({"wave_height": 2.0 + np.sin(np.arange(len(hidx)) / 8)}, index=hidx)
+    runs = {k: pd.DataFrame({"wave_height": 2.0 + np.sin(np.arange(len(hidx)) / 8 + 0.3 * k)}, index=hidx)
+            for k in (1, 2)}
+    issue = datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc)
+    meta = {"lat": 37.75, "lon": -122.84, "name": "x"}
+    f1 = W.BuoyFeatures("46026", meta, obs, model, None, start, end, model_runs=runs)
+    c1 = W.build_wave_case(f1, issue, lead)                       # auto -> runs
+    assert c1.inputs["has_model"]
+    bad_runs = {}
+    for k, df in runs.items():
+        df = df.copy()
+        late = (df.index - pd.Timedelta(hours=24 * k - RUN_DELAY_H)) > pd.Timestamp(issue)
+        df.loc[late, "wave_height"] = 50.0
+        bad_runs[k] = df
+    bad_model = model.copy()
+    bad_model["wave_height"] = 77.0                                # hindsight must not be read
+    f2 = W.BuoyFeatures("46026", meta, obs, bad_model, None, start, end, model_runs=bad_runs)
+    assert _inputs_equal(c1.inputs, W.build_wave_case(f2, issue, lead, model="runs").inputs)
+    assert _inputs_equal(c1.inputs, W.build_wave_case(f2, issue, lead).inputs)
+    assert W.build_wave_case(f2, issue, lead, model="hindsight").inputs["model_target"] == 77.0

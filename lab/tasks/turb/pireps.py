@@ -3,16 +3,25 @@
 Intensity codes (the turbulence group, `/TB ...`):
     NEG / SMOOTH = 0, light = 2, light-moderate = 3, moderate = 4,
     moderate-severe = 5, severe = 6, severe-extreme = 7, extreme = 8.
-A group that names two adjacent intensities ("LGT-MOD", "LGT OCNL MOD",
-"MOD TO SEV") gets the in-between code, as the Aviation Weather Center does.
-NEG together with light gives 1 (still "light or less").
+
+A group can describe several layers ("LGT 240-260 MOD 300-340",
+"LGT OCNL MOD 370 NEG 390"). Each layer becomes its own labelled point:
+    * intensity: the words of that layer; two adjacent intensities in one layer
+      ("LGT-MOD", "LGT -MOD", "CONS LGT OCNL MOD", "MOD CHOP OCNL LGT",
+      "LIGHT TO MOD") give the in-between code, as the Aviation Weather Center
+      does (NEG with light gives 1, still light or less);
+    * altitude: the middle of the layer's range, or its single level; with only
+      a bound ("BLO 230", "ABV 060") the aircraft's own flight level, if it
+      satisfies the bound, else the layer is dropped; with nothing, the
+      aircraft's flight level. A bound never moves a report to another level.
 
 Classes used by the forecasters: positive = code >= 4 (moderate or greater),
 negative = code <= 2 (light or less); code 3 (light-moderate) is dropped as
-ambiguous. Standard reports are read from their slashed `/TB` group;
-automated airline AIREPs ("ARP UAL286 ... F390 ... TB CONT SMTH IC") from the
-text between "TB" and the icing group "IC" (an empty group, as in
-"TB IC MOD RIME", has no turbulence intensity).
+ambiguous. Standard reports are read from their slashed `/TB` group (which
+runs to the next known group such as /IC or /RM); automated airline AIREPs
+("ARP UAL286 ... F390 ... TB CONT SMTH IC") from the text between "TB" and
+the icing group "IC" (an empty group, as in "TB IC MOD RIME", has no
+turbulence intensity).
 
 Positions come from the data sources (both decode the /OV group); this module
 does not decode navaid radials itself.
@@ -21,6 +30,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,38 +51,99 @@ _WORDS = {
     "SEV": 6, "SVR": 6, "SEVERE": 6,
     "EXTRM": 8, "EXTREME": 8, "XTRM": 8, "EXTM": 8,
 }
-_TB_GROUP = re.compile(r"/\s*TB\b([^/]*)")
+_BELOW = {"BLO", "BLW", "BELOW", "BLWO"}
+_ABOVE = {"ABV", "ABOVE", "AOA"}
+_GROUP_IDS = "OV|TM|FL|TP|SK|WX|TA|WV|TB|IC|RM"
+_TB_GROUP = re.compile(r"/\s*TB\b(.*?)(?=/\s*(?:" + _GROUP_IDS + r")\b|$)")
 _FL = re.compile(r"/\s*FL\s*(\d{2,3})\b")
 _TM = re.compile(r"/\s*TM\s*(\d{4})\b")
-_ALT = re.compile(r"(?<![\d.])(\d{3})(?![\d.])")
+_TOKEN = re.compile(r"FL\d{3}|\d+|[A-Z]+|-")
 _ARP_TB = re.compile(r"\bTB\b(.*?)(?=\bIC\b|$)")
 _ARP_FL = re.compile(r"\bF(\d{3})\b")
 
 
-def intensity_from_group(text: str) -> int | None:
-    """Intensity code of one turbulence group's text (without the "/TB")."""
-    t = text.upper().replace("-", " - ")
-    found = [_WORDS[w] for w in re.findall(r"[A-Z]+", t) if w in _WORDS]
+def combine_intensities(found: list[int]) -> int | None:
+    """One layer's code from the intensity words it names."""
     if not found:
         return None
     vals = sorted(set(found))
     if len(vals) == 1:
         return vals[0]
-    if len(vals) == 2:
-        lo, hi = vals
-        if (lo, hi) in ((0, 2), (2, 4), (4, 6), (6, 8)):
-            return (lo + hi) // 2
+    if len(vals) == 2 and vals in ([0, 2], [2, 4], [4, 6], [6, 8]):
+        return (vals[0] + vals[1]) // 2
     return vals[-1]
 
 
-def parse_raw(raw: str) -> dict:
-    """Parse one raw report. Returns code (None if no turbulence group),
-    the group text, the flight level of the report (/FL), the turbulence
-    layer's middle flight level if the group gives altitudes, and /TM hhmm."""
-    out = {"code": None, "tb_text": None, "fl": None, "tb_fl": None, "tm": None}
+def _altitude(tok: str) -> int | None:
+    if tok == "SFC":
+        return 0
+    m = re.fullmatch(r"(?:FL)?(\d{3})", tok)
+    if m and int(m.group(1)) <= 600:
+        return int(m.group(1))
+    return None
+
+
+def split_layers(text: str) -> list[dict]:
+    """Layers of one turbulence group: [{"code", "alts", "bound"}].
+    A new layer starts when an intensity word, or a bound, follows a layer that
+    already has an intensity and an altitude or bound."""
+    tokens = _TOKEN.findall(text.upper().replace("-", " - "))
+    layers: list[dict] = []
+    cur = {"ints": [], "alts": [], "bound": None}
+    pending = None
+    for tok in tokens:
+        done = bool(cur["ints"]) and bool(cur["alts"] or cur["bound"])
+        if tok in _WORDS:
+            if done:
+                layers.append(cur)
+                cur = {"ints": [], "alts": [], "bound": None}
+            cur["ints"].append(_WORDS[tok])
+        elif tok in _BELOW or tok in _ABOVE:
+            if done:  # "MOD 280 BLO 275 NEG": the bound opens the next layer
+                layers.append(cur)
+                cur = {"ints": [], "alts": [], "bound": None}
+            pending = "below" if tok in _BELOW else "above"
+        else:
+            alt = _altitude(tok)
+            if alt is None:
+                continue
+            if pending:
+                cur["bound"] = (pending, alt)
+                pending = None
+            else:
+                cur["alts"].append(alt)
+    layers.append(cur)
+    return [{"code": combine_intensities(l["ints"]), "alts": l["alts"], "bound": l["bound"]}
+            for l in layers if l["ints"]]
+
+
+def layer_level(layer: dict, aircraft_fl) -> int | None:
+    """Flight level a layer's label applies to (None if unknown)."""
+    if layer["alts"]:
+        return int(math.floor((min(layer["alts"]) + max(layer["alts"])) / 2 + 0.5))
+    if aircraft_fl is None:
+        return None
+    if layer["bound"]:
+        kind, v = layer["bound"]
+        ok = aircraft_fl <= v if kind == "below" else aircraft_fl >= v
+        return int(aircraft_fl) if ok else None
+    return int(aircraft_fl)
+
+
+def intensity_from_group(text: str) -> int | None:
+    """Worst code over a group's layers (a summary; labels use the layers)."""
+    codes = [l["code"] for l in split_layers(text)]
+    return max(codes) if codes else None
+
+
+def parse_raw(raw: str, source_fl=None) -> dict:
+    """Parse one raw report: the aircraft's flight level (/FL, or "F390" in an
+    AIREP, else `source_fl`), /TM hhmm, the turbulence group text, and the
+    labelled layers [{"code", "fl"}] (layers with an unknown level are left out)."""
+    out = {"fl": None, "tm": None, "tb_text": None, "layers": []}
     if not raw:
         return out
-    up = raw.upper()
+    up = str(raw).upper()
     m = _FL.search(up)
     if m:
         out["fl"] = int(m.group(1))
@@ -80,20 +151,19 @@ def parse_raw(raw: str) -> dict:
     if m:
         out["tm"] = m.group(1)
     m = _TB_GROUP.search(up)
-    is_airep = re.match(r"^\s*ARP\b", up) is not None or " ARP " in up[:40]
-    if is_airep:  # automated AIREP: "... F390 160/043KT TB CONT SMTH IC"
-        fm = _ARP_FL.search(up)
+    if re.match(r"^\s*ARP\b", up) is not None or " ARP " in up[:40]:
+        fm = _ARP_FL.search(up)  # automated AIREP: "... F390 160/043KT TB CONT SMTH IC"
         if fm:
             out["fl"] = int(fm.group(1))
         m = _ARP_TB.search(up)
+    if out["fl"] is None and source_fl is not None and source_fl == source_fl:
+        out["fl"] = int(round(float(source_fl)))
     if m:
-        text = m.group(1).strip()
-        out["tb_text"] = text
-        out["code"] = intensity_from_group(text)
-        alts = [int(a) for a in _ALT.findall(text)]
-        alts = [a for a in alts if 0 <= a <= 600]
-        if alts:
-            out["tb_fl"] = int(round((min(alts) + max(alts)) / 2))
+        out["tb_text"] = m.group(1).strip()
+        for layer in split_layers(out["tb_text"]):
+            level = layer_level(layer, out["fl"])
+            if level is not None:
+                out["layers"].append({"code": layer["code"], "fl": level})
     return out
 
 
@@ -108,28 +178,39 @@ def label(code) -> float:
     return float("nan")
 
 
-COLUMNS = ["time", "lat", "lon", "fl", "code", "raw", "source"]
+# One row per report as received (what the live store keeps) ...
+REPORT_COLUMNS = ["time", "lat", "lon", "ac_fl", "raw", "source"]
+# ... and one row per labelled layer (what models and grading use).
+COLUMNS = ["time", "lat", "lon", "fl", "code", "raw", "source", "layer"]
+_DTYPES = {"time": "datetime64[ns, UTC]", "lat": float, "lon": float, "fl": float, "code": float,
+           "raw": str, "source": str, "layer": int, "ac_fl": float}
 
 
-def _rows_to_frame(rows: list[dict]) -> pd.DataFrame:
+def _frame(rows: list[dict], columns: list[str]) -> pd.DataFrame:
     if not rows:
-        return pd.DataFrame({c: pd.Series(dtype=t) for c, t in
-                             zip(COLUMNS, ["datetime64[ns, UTC]", float, float, float, float, str, str])})
-    df = pd.DataFrame(rows, columns=COLUMNS)
+        return pd.DataFrame({c: pd.Series(dtype=_DTYPES[c]) for c in columns})
+    df = pd.DataFrame(rows, columns=columns)
     df["time"] = pd.to_datetime(df["time"], utc=True)
-    for c in ("lat", "lon", "fl", "code"):
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    for c in ("lat", "lon", "fl", "code", "ac_fl"):
+        if c in df:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
     return df
 
 
-def _effective_fl(parsed: dict, source_fl) -> float:
-    if parsed["tb_fl"] is not None:
-        return float(parsed["tb_fl"])
-    if parsed["fl"] is not None:
-        return float(parsed["fl"])
-    if source_fl is not None and source_fl == source_fl:
-        return float(source_fl)
-    return float("nan")
+def _rows_to_frame(rows: list[dict]) -> pd.DataFrame:
+    return _frame(rows, COLUMNS)
+
+
+def expand_layers(reports: pd.DataFrame) -> pd.DataFrame:
+    """Report rows -> one row per labelled layer."""
+    rows = []
+    for t, la, lo, acf, raw, src in zip(reports["time"], reports["lat"], reports["lon"],
+                                        reports["ac_fl"], reports["raw"], reports["source"]):
+        p = parse_raw(raw, acf)
+        for i, layer in enumerate(p["layers"]):
+            rows.append({"time": t, "lat": la, "lon": lo, "fl": float(layer["fl"]), "code": layer["code"],
+                         "raw": raw, "source": src, "layer": i})
+    return _rows_to_frame(rows)
 
 
 # ------------------------------------------------------------- IEM archive
@@ -154,23 +235,25 @@ def _iem_records(text: str):
         yield rec
 
 
-def parse_iem_csv(text: str) -> pd.DataFrame:
+def iem_reports(text: str) -> pd.DataFrame:
+    """Report rows (one per report) from an IEM CSV response."""
     rows = []
     for rec in _iem_records(text):
         raw = rec.get("REPORT") or ""
-        p = parse_raw(raw)
-        if p["code"] is None:
-            continue
         try:
             t = datetime.strptime(rec["VALID"], "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
             lat, lon = float(rec["LAT"]), float(rec["LON"])
         except (KeyError, ValueError, TypeError):
             continue
         fl_ft = rec.get("FL")
-        src_fl = float(fl_ft) / 100.0 if fl_ft not in (None, "", "None") else None
-        rows.append({"time": t, "lat": lat, "lon": lon, "fl": _effective_fl(p, src_fl),
-                     "code": p["code"], "raw": raw, "source": "iem"})
-    return _rows_to_frame(rows)
+        ac_fl = float(fl_ft) / 100.0 if fl_ft not in (None, "", "None") else float("nan")
+        rows.append({"time": t, "lat": lat, "lon": lon, "ac_fl": ac_fl, "raw": raw, "source": "iem"})
+    return _frame(rows, REPORT_COLUMNS)
+
+
+def parse_iem_csv(text: str) -> pd.DataFrame:
+    """Labelled layer rows from an IEM CSV response."""
+    return expand_layers(iem_reports(text))
 
 
 def fetch_iem(start: datetime, end: datetime, log=print) -> str:
@@ -210,33 +293,52 @@ def load_iem_days(days: int, now: datetime, log=print) -> pd.DataFrame:
 AWC_BOXES = [(20, -130, 37.5, -95), (20, -95, 37.5, -60), (37.5, -130, 55, -95), (37.5, -95, 55, -60)]
 
 
-def parse_awc_json(items: list[dict]) -> pd.DataFrame:
+def awc_reports(items: list[dict]) -> pd.DataFrame:
     rows = []
     for x in items:
-        raw = x.get("rawOb") or ""
-        p = parse_raw(raw)
-        if p["code"] is None or x.get("lat") is None or x.get("lon") is None:
+        if x.get("lat") is None or x.get("lon") is None or x.get("obsTime") is None:
             continue
-        t = datetime.fromtimestamp(int(x["obsTime"]), tz=timezone.utc)
-        rows.append({"time": t, "lat": float(x["lat"]), "lon": float(x["lon"]),
-                     "fl": _effective_fl(p, x.get("fltLvl")), "code": p["code"],
-                     "raw": raw, "source": "awc"})
-    return _rows_to_frame(rows)
+        acf = x.get("fltLvl")
+        rows.append({"time": datetime.fromtimestamp(int(x["obsTime"]), tz=timezone.utc),
+                     "lat": float(x["lat"]), "lon": float(x["lon"]),
+                     "ac_fl": float(acf) if acf is not None else float("nan"),
+                     "raw": x.get("rawOb") or "", "source": "awc"})
+    return _frame(rows, REPORT_COLUMNS)
 
 
-def fetch_awc(age_hours: int = 2, log=print) -> pd.DataFrame:
-    """Recent reports from the Aviation Weather Center. The API returns at most
-    400 reports per call, so the box is split into four."""
+def parse_awc_json(items: list[dict]) -> pd.DataFrame:
+    return expand_layers(awc_reports(items))
+
+
+def save_raw(kind: str, text: str, now: datetime, suffix: str = "", ext: str = "json") -> Path:
+    """Keep every API response as received, so truth can be re-derived later."""
+    d = net.CACHE / "raw" / kind
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{now:%Y%m%dT%H%M%SZ}{suffix}.{ext}"
+    path.write_text(text)
+    return path
+
+
+def fetch_awc_reports(now: datetime, age_hours: int = 2, log=print) -> pd.DataFrame:
+    """Recent report rows from the Aviation Weather Center. The API returns at
+    most 400 reports per call, so the box is split into four."""
     frames = []
-    for (la0, lo0, la1, lo1) in AWC_BOXES:
+    for k, (la0, lo0, la1, lo1) in enumerate(AWC_BOXES):
         r = net.get("https://aviationweather.gov/api/data/pirep",
                     params={"format": "json", "age": age_hours, "bbox": f"{la0},{lo0},{la1},{lo1}"},
                     min_gap=1.0, log=log)
+        save_raw("awc", r.text, now, suffix=f"_box{k}")
         items = r.json() if r.text.strip() else []
         if len(items) >= 400:
             log(f"  warning: AWC box {la0},{lo0},{la1},{lo1} hit the 400-report cap")
-        frames.append(parse_awc_json(items))
-    return dedupe(pd.concat(frames, ignore_index=True))
+        frames.append(awc_reports(items))
+    return pd.concat(frames, ignore_index=True)
+
+
+def fetch_iem_reports(now: datetime, hours: int = 6, log=print) -> pd.DataFrame:
+    text = fetch_iem(now - timedelta(hours=hours), now, log=log)
+    save_raw("iem", text, now, ext="csv")
+    return iem_reports(text)
 
 
 # ------------------------------------------------------------------- store
@@ -250,13 +352,14 @@ def report_key(raw: str) -> str:
 
 
 def dedupe(df: pd.DataFrame) -> pd.DataFrame:
-    """One row per report (first copy kept). Two rows are the same report if they
-    share the minute and the report body, or the minute, position (0.1 degree),
-    level and code (corrected re-transmissions)."""
+    """One row per labelled layer (first copy kept). Two rows are the same if
+    they share the minute, the report body and the layer, or the minute,
+    position (0.1 degree), level and code (corrected re-transmissions)."""
     if df.empty:
         return df.reset_index(drop=True)
     t = df["time"].dt.floor("min")
-    body = pd.DataFrame({"t": t, "r": df["raw"].map(report_key)})
+    layer = df["layer"] if "layer" in df else 0
+    body = pd.DataFrame({"t": t, "r": df["raw"].map(report_key), "l": layer})
     place = pd.DataFrame({"t": t, "la": df["lat"].round(1), "lo": df["lon"].round(1),
                           "fl": df["fl"].round(0), "c": df["code"]})
     keep = ~(body.duplicated() | place.duplicated())
@@ -272,20 +375,31 @@ def upper(df: pd.DataFrame) -> pd.DataFrame:
     return df[df["fl"] >= UPPER_FL]
 
 
-LIVE_STORE = net.CACHE / "pireps_live.csv.gz"
+# The live store is append-only: rows are only ever added, never rewritten.
+LIVE_STORE = net.CACHE / "pireps_live_reports.csv"
+LEGACY_STORE = net.CACHE / "pireps_live.csv.gz"  # first version (rewritten on each merge); read only
 
 
-def read_store(path: Path = LIVE_STORE) -> pd.DataFrame:
-    if not Path(path).exists():
+def append_to_store(reports: pd.DataFrame, path: Path = LIVE_STORE) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    out = reports[REPORT_COLUMNS].copy()
+    out["time"] = out["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    out.to_csv(path, mode="a", header=not path.exists(), index=False)
+
+
+def read_store(path: Path = LIVE_STORE, legacy: Path | None = LEGACY_STORE) -> pd.DataFrame:
+    """Labelled layer rows from the store, re-parsed from the raw text and de-duplicated."""
+    frames = []
+    if legacy is not None and Path(legacy).exists():
+        old = pd.read_csv(legacy, keep_default_na=False, na_values=[""])
+        old["ac_fl"] = float("nan")  # the raw text carries the flight level
+        frames.append(old)
+    if Path(path).exists():
+        frames.append(pd.read_csv(path, keep_default_na=False, na_values=[""]))
+    if not frames:
         return _rows_to_frame([])
-    df = pd.read_csv(path, keep_default_na=False, na_values=[""])
+    df = pd.concat(frames, ignore_index=True)
     df["raw"] = df["raw"].astype(str)
     df["time"] = pd.to_datetime(df["time"], utc=True, format="ISO8601")
-    return df[COLUMNS]
-
-
-def merge_into_store(new: pd.DataFrame, path: Path = LIVE_STORE) -> pd.DataFrame:
-    df = dedupe(pd.concat([read_store(path), new], ignore_index=True))
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False, compression="gzip")
-    return df
+    return dedupe(expand_layers(df[REPORT_COLUMNS]))

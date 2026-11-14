@@ -6,6 +6,19 @@ Every station is put on a regular 6-minute grid. Features for a case issued at
 time T are read only from grid cells at or before T (observations) or from the
 tide table and the weather forecast (allowed: both are knowable at T). Truth at
 target time is the mean of the 6-minute observed residuals within +-6 minutes.
+
+Weather comes from one of two sources (`build_case(..., weather=...)`):
+
+  "runs"       the Previous Runs archive (`StationData.weather_runs`): for every
+               hour of the lead window, the value from a model run that was
+               already published at the issue time. Leak-free; use it for history.
+  "hindsight"  the forecast endpoint (`StationData.weather`). For a live issue
+               time (now) the hours ahead are a real forecast. For a past issue
+               time they are short-lead forecasts stitched together, close to
+               what actually happened: a backtest with them leaks the future.
+
+The default "auto" uses "runs" when they are loaded and "hindsight" otherwise,
+which keeps the live loop (which loads no runs) exactly as it was.
 """
 from __future__ import annotations
 
@@ -23,6 +36,20 @@ LEADS = (1, 3, 6, 12, 24)
 HIST_HOURS = 24
 MEAN_HOURS = 72
 TASK = "coast_water"
+# Previous Runs: `_previous_day<k>` at valid hour h comes from a run initialised
+# at or before h - 24k hours. Runs are published a few hours after their
+# initialisation time; we allow RUN_DELAY_H. So day k is usable for every hour
+# up to issue + 24k - RUN_DELAY_H.
+RUN_DELAY_H = 6
+WEATHER_MODES = ("auto", "runs", "hindsight", "none")
+
+
+def run_offset_days(lead_h: float) -> int:
+    """Which previous-run series is leak-free for a whole lead window."""
+    k = 1
+    while lead_h > 24 * k - RUN_DELAY_H:
+        k += 1
+    return k
 
 
 def residual(obs: pd.Series, tide: pd.Series) -> pd.Series:
@@ -39,7 +66,10 @@ def _epoch(t) -> float:
 class StationData:
     """Raw series for one gauge. `weather` is an hourly DataFrame with
     pressure_msl (hPa), wind_speed_10m (m/s), wind_direction_10m (deg, from),
-    or None when the weather service was unavailable."""
+    or None when the weather service was unavailable. It comes from the forecast
+    endpoint, so in the past it is hindsight (see the module docstring).
+    `weather_runs` maps k -> the same columns as forecast by runs at least
+    24*k hours before each valid hour (Previous Runs archive), or None."""
     id: str
     name: str
     lat: float
@@ -47,6 +77,7 @@ class StationData:
     obs: pd.Series
     tide: pd.Series
     weather: pd.DataFrame | None = None
+    weather_runs: dict[int, pd.DataFrame] | None = None
 
 
 class StationFeatures:
@@ -71,18 +102,16 @@ class StationFeatures:
         self.t0 = _epoch(self.start)
         # weather on hourly times (forecast product: values after T are a forecast)
         self.has_weather = False
-        if sd.weather is not None and len(sd.weather):
-            w = sd.weather.dropna(subset=["pressure_msl"])
-            if len(w) > 24:
-                self.has_weather = True
-                self.w_t = np.array([_epoch(t) for t in w.index])
-                self.w_p = w["pressure_msl"].to_numpy(float)
-                spd = w["wind_speed_10m"].to_numpy(float)
-                dirn = np.deg2rad(w["wind_direction_10m"].to_numpy(float))
-                u = -spd * np.sin(dirn)   # direction is where the wind comes FROM
-                v = -spd * np.cos(dirn)
-                self.w_tx = spd * u       # wind stress proxy, m^2/s^2, toward east
-                self.w_ty = spd * v       # toward north
+        hs = _weather_arrays(sd.weather)
+        if hs is not None:
+            self.has_weather = True
+            self.w_t, self.w_p, self.w_u, self.w_v, self.w_tx, self.w_ty = hs
+        # leak-free weather from previous runs: {k: (t, p, u, v, tx, ty)}
+        self.runs: dict[int, tuple] = {}
+        for k, df in (sd.weather_runs or {}).items():
+            arrs = _weather_arrays(df)
+            if arrs is not None:
+                self.runs[int(k)] = arrs
 
     def index(self, t: datetime) -> int:
         return int(round((_epoch(t) - self.t0) / 360.0))
@@ -92,6 +121,36 @@ class StationFeatures:
 
     def weather_at(self, t_epoch: np.ndarray, arr: np.ndarray) -> np.ndarray:
         out = np.interp(t_epoch, self.w_t, arr, left=np.nan, right=np.nan)
+        return out
+
+    def weather_source(self, lead_h: float, weather: str = "auto"):
+        """(arrays (t, p, u, v, tx, ty), run age in hours or None) for a case
+        with this lead, or (None, None) when that source is not available."""
+        if weather not in WEATHER_MODES:
+            raise ValueError(f"weather must be one of {WEATHER_MODES}, got {weather!r}")
+        if weather == "none":
+            return None, None
+        if weather == "runs" or (weather == "auto" and self.runs):
+            k = run_offset_days(lead_h)
+            arrs = self.runs.get(k)
+            return (arrs, 24 * k) if arrs is not None else (None, None)
+        if not self.has_weather:
+            return None, None
+        return (self.w_t, self.w_p, self.w_u, self.w_v, self.w_tx, self.w_ty), None
+
+    def weather_hours(self, issue: datetime, lead_h: int, weather: str = "auto") -> dict | None:
+        """Hourly weather from issue to target (lead_h + 1 values, index 0 = issue)
+        from one source, or None if any value is missing."""
+        arrs, age = self.weather_source(lead_h, weather)
+        if arrs is None:
+            return None
+        t, p, u, v, tx, ty = arrs
+        times = _epoch(issue) + 3600.0 * np.arange(0, lead_h + 1)
+        out = {k: np.interp(times, t, a, left=np.nan, right=np.nan)
+               for k, a in (("p", p), ("u", u), ("v", v), ("tx", tx), ("ty", ty))}
+        if any(np.isnan(a).any() for a in out.values()):
+            return None
+        out["run_age_h"] = age
         return out
 
     def truth_at(self, t: datetime) -> float | None:
@@ -123,9 +182,26 @@ def current_residual(f: StationFeatures, i: int, max_age_steps: int = 10) -> tup
     return float(vals.mean()), int(len(seg) - 1 - newest)
 
 
-def build_case(f: StationFeatures, issue: datetime, lead_h: int) -> Case | None:
+def _weather_arrays(w: pd.DataFrame | None):
+    """(t, p, u, v, tx, ty) hourly arrays from a weather DataFrame, or None."""
+    if w is None or not len(w):
+        return None
+    w = w.dropna(subset=["pressure_msl"])
+    if len(w) <= 24:
+        return None
+    t = np.array([_epoch(x) for x in w.index])
+    p = w["pressure_msl"].to_numpy(float)
+    spd = w["wind_speed_10m"].to_numpy(float)
+    dirn = np.deg2rad(w["wind_direction_10m"].to_numpy(float))
+    u = -spd * np.sin(dirn)   # direction is where the wind comes FROM
+    v = -spd * np.cos(dirn)
+    return t, p, u, v, spd * u, spd * v   # wind stress proxy, m^2/s^2, toward east / north
+
+
+def build_case(f: StationFeatures, issue: datetime, lead_h: int, weather: str = "auto") -> Case | None:
     """One case: station f, issued at `issue`, target issue + lead. Uses only
-    observations at or before `issue`, plus tide table and weather forecast."""
+    observations at or before `issue`, plus tide table and weather forecast
+    (`weather` picks the source; see the module docstring)."""
     i = f.index(issue)
     if i < 0 or i >= f.n:
         return None
@@ -156,13 +232,15 @@ def build_case(f: StationFeatures, issue: datetime, lead_h: int) -> Case | None:
         "has_weather": False,
         "dp_hpa": 0.0, "taux": 0.0, "tauy": 0.0, "p_issue": float("nan"), "p_target": float("nan"),
     }
-    if f.has_weather:
+    arrs, _ = f.weather_source(lead_h, weather)
+    if arrs is not None:
+        w_t, w_p, _, _, w_tx, w_ty = arrs
         t_i = _epoch(issue)
         t_win = t_i + 3600.0 * np.arange(1, lead_h + 1)
-        p_i = float(f.weather_at(np.array([t_i]), f.w_p)[0])
-        p_t = float(f.weather_at(np.array([t_win[-1]]), f.w_p)[0])
-        tx = f.weather_at(t_win, f.w_tx)
-        ty = f.weather_at(t_win, f.w_ty)
+        p_i = float(np.interp(t_i, w_t, w_p, left=np.nan, right=np.nan))
+        p_t = float(np.interp(t_win[-1], w_t, w_p, left=np.nan, right=np.nan))
+        tx = np.interp(t_win, w_t, w_tx, left=np.nan, right=np.nan)
+        ty = np.interp(t_win, w_t, w_ty, left=np.nan, right=np.nan)
         if not (np.isnan(p_i) or np.isnan(p_t) or np.isnan(tx).any() or np.isnan(ty).any()):
             inputs.update(has_weather=True, p_issue=p_i, p_target=p_t, dp_hpa=p_t - p_i,
                           taux=float(tx.mean()), tauy=float(ty.mean()))
@@ -171,8 +249,9 @@ def build_case(f: StationFeatures, issue: datetime, lead_h: int) -> Case | None:
 
 
 def build_history_cases(feats: dict[str, StationFeatures], start: datetime, end: datetime,
-                        leads=LEADS) -> tuple[list[Case], list[dict]]:
-    """Hourly issue times in [start, end - lead]; keeps cases whose truth exists."""
+                        leads=LEADS, weather: str = "auto") -> tuple[list[Case], list[dict]]:
+    """Hourly issue times in [start, end - lead]; keeps cases whose truth exists.
+    For an honest backtest pass weather="runs" (or "none")."""
     cases, truths = [], []
     for sid, f in feats.items():
         t = pd.Timestamp(start).ceil("h").to_pydatetime()
@@ -184,7 +263,7 @@ def build_history_cases(feats: dict[str, StationFeatures], start: datetime, end:
                 tr = f.truth_at(target)
                 if tr is None:
                     continue
-                c = build_case(f, t, h)
+                c = build_case(f, t, h, weather=weather)
                 if c is None:
                     continue
                 cases.append(c)

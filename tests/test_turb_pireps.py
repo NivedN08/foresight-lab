@@ -4,8 +4,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from lab.tasks.turb.pireps import (dedupe, intensity_from_group, label, parse_awc_json,
-                                   parse_iem_csv, parse_raw)
+from lab.tasks.turb.pireps import (append_to_store, awc_reports, dedupe, intensity_from_group, label,
+                                   parse_awc_json, parse_iem_csv, parse_raw, read_store)
 
 FIX = Path(__file__).parent / "fixtures" / "turb"
 RAW = json.loads((FIX / "pirep_raw.json").read_text())
@@ -18,9 +18,8 @@ def test_fixture_has_enough_real_reports():
 @pytest.mark.parametrize("case", RAW, ids=[c["raw"][:40] for c in RAW])
 def test_parse_raw_reports(case):
     p = parse_raw(case["raw"])
-    assert p["code"] == case["code"], case.get("note")
+    assert [[l["code"], l["fl"]] for l in p["layers"]] == case["layers"], case.get("note")
     assert p["fl"] == case["fl"]
-    assert p["tb_fl"] == case["tb_fl"]
     assert p["tm"] == case["tm"]
 
 
@@ -34,7 +33,7 @@ def test_intensity_words_and_ranges():
     assert intensity_from_group("SEV") == 6
     assert intensity_from_group("EXTRM") == 8
     assert intensity_from_group("CHOP") is None
-    assert intensity_from_group("NEG BLO 300 MOD ABV 340") == 4  # layered, not adjacent: worst
+    assert intensity_from_group("NEG BLO 300 MOD ABV 340") == 4  # summary over layers: worst
 
 
 def test_label_classes():
@@ -51,6 +50,46 @@ def test_iem_csv_with_quote_marks():
     den = df[df["raw"].str.startswith("DEN")].iloc[0]
     assert den["code"] == 0 and den["fl"] == 180
     assert len(dedupe(df[df["raw"].str.contains("EAU UA /OV EAU010025")])) == 1
+
+
+def _layers(raw):
+    return [(l["code"], l["fl"]) for l in parse_raw(raw)["layers"]]
+
+
+def test_checker_examples():
+    # light occasionally moderate is light-moderate; the NEG layer is its own point
+    assert _layers("X UA /OV X/TM 1200/FL370/TB CONS LGT OCNL MOD 370 NEG 390") == [(3, 370), (0, 390)]
+    # "LGT -MOD" is light-moderate; at FL465 only the NEG ABV 460 layer applies
+    assert _layers("X UA /OV X/TM 1200/FL465/TB CONT LGT -MOD BLO 460 NEG ABV 460") == [(0, 465)]
+    assert _layers("X UA /OV X/TM 1200/FL450/TB CONT LGT -MOD BLO 460 NEG ABV 460") == [(3, 450)]
+    # one point per layer at the layer's middle
+    assert _layers("X UA /OV X/TM 1200/FL300/TB LGT 240-260 MOD 300-340") == [(2, 250), (4, 320)]
+    # a bound never moves a low report to the upper levels
+    assert _layers("X UA /OV X/TM 1200/FL070/TB LGT CHOP BLW 230") == [(2, 70)]
+    assert _layers("X UA /OV X/TM 1200/FL100/TB LGT SFC-060/ LGT ABV 060") == [(2, 30), (2, 100)]
+
+
+def test_layers_become_rows():
+    import pandas as pd
+    reps = pd.DataFrame({"time": pd.to_datetime(["2026-11-13T12:00Z"], utc=True), "lat": [40.0], "lon": [-100.0],
+                         "ac_fl": [float("nan")], "source": ["awc"],
+                         "raw": ["X UA /OV X/TM 1200/FL300/TB LGT 240-260 MOD 300-340"]})
+    from lab.tasks.turb.pireps import expand_layers
+    rows = expand_layers(reps)
+    assert rows[["fl", "code", "layer"]].values.tolist() == [[250, 2, 0], [320, 4, 1]]
+    assert len(dedupe(rows)) == 2
+
+
+def test_live_store_is_append_only(tmp_path):
+    items = json.loads((FIX / "awc_sample.json").read_text())
+    store = tmp_path / "store.csv"
+    reps = awc_reports(items)
+    append_to_store(reps, store)
+    size1 = store.stat().st_size
+    first = read_store(store, legacy=None)
+    append_to_store(reps, store)          # the same reports again
+    assert store.stat().st_size > size1   # rows are only added ...
+    assert len(read_store(store, legacy=None)) == len(first)  # ... and duplicates removed on read
 
 
 def test_awc_json_sample():
@@ -74,5 +113,5 @@ def test_same_report_from_both_sources_is_kept_once():
                 "000 UBUS31 KWBC 132210 GLS UA /OV VUH140179 /TM 2207 /FL300/TP B738/TB NEG/RM ZHU",
                 "MSY UA /OV LEV135330/TM 2207/FL300/TP B39M/TB NEG"],
         "source": ["iem", "awc", "awc"]})
-    out = dedupe(df)
+    out = dedupe(df.assign(layer=0))
     assert len(out) == 2 and out.iloc[0]["source"] == "iem"
