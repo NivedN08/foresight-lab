@@ -44,7 +44,7 @@ Every table includes the official reference, the strongest trivial rule, and the
 ## 6. The four claims and how each is tested
 
 **Claim 1: the lab's forecaster beats the baselines on data from after it was built.**
-Test window table (mean loss by lead, block-bootstrap 95% intervals, paired difference against the best baseline) plus the live sealed scoreboard. Also reported: random non-LLM mutation of the starting formula at the same evaluation budget, and a single agent without the swarm.
+Test window table (mean loss by lead, block-bootstrap 95% intervals, paired difference against the best baseline) plus the live sealed scoreboard. The comparison is a ladder, each rung adding one thing: random non-LLM mutation of the starting formula; a single agent; the lab's researcher with nothing extra; with the notebook; with search; with both; and the older three-role pipeline.
 
 **Claim 2: the lab gets better at research, not only at one problem.**
 A lab is "fresh" (no notebook, no playbook) or "warm" (carries the notebook and playbook from a problem it has already worked on). Both get the same budget on a problem neither has seen.
@@ -83,6 +83,7 @@ Same lab, same seeds, four memory setups: none, full context, plain vector store
 
 | When | Change | Why |
 |---|---|---|
+| Nov 13, evening | The lab's default proposal mode changed from a three-role pipeline (analyst, scout, engineer forced to implement the scouted idea) to a single researcher that may use the notebook and a board of scouted ideas or ignore them. Claim 1 became a ladder; the earlier matrices were re-planned under new names | In the first controlled comparison (2 seeds, 48 proposals) the single agent beat the pipeline on the confirm window at equal proposals (2.70 vs 3.00 cm) and at equal dollars. The old result is kept in `runs/exp/claim1_coast` and quoted in `docs/experiments.md`. Agents also no longer see confirm-window figures in the notebook, only whether the later-window check passed. |
 | Nov 13, evening | Claim 2 control changed: "fresh, handed the old best forecaster" replaced by "fresh with a cheat sheet" (the interface and sandbox rules, no findings). Rehearsal runs use 2 seeds, not 5 | A forecaster for one problem cannot run on another, so it cannot be handed over. Two seeds is all one laptop can do overnight; the event runs use 5. Two seeds support no significance claim and the report says so. |
 | Nov 13, evening | Time-to-target goal fixed by rule: 5% below the starting formula's loss on the confirm window, per problem | The report's first version set the goal after the fact from the reference arm's own results. The rule was set while the first matrix (lab vs baselines on the coast) was partly finished; the other three had not started. |
 | Nov 13, evening | "Same budget" defined as the same number of proposals; dollars and minutes are reported beside it | A single-agent proposal costs about a seventh of a swarm proposal, so equal proposals is not equal money. Both views are reported. |

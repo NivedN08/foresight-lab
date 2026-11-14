@@ -17,7 +17,7 @@ Point at a filled seal mark; hover it: sealed time, predicted level, measured le
 Number to say: sealed forecasts graded so far, tide table error vs the lab's forecaster (`Lab:` models on the scoreboard), next to the best simple rule. **[final]** (Friday evening, before any lab forecast had been graded: at 1 hour the tide table was off by 54.2 cm, "the gap continues" by 2.72 cm, its damped version by 2.62 cm and the hand-written starting formula by 2.66 cm, on 92 forecasts; at 3 hours 54.5, 4.94, 4.46 and 3.9 cm on 46. These are the hand-written formula's numbers, not the lab's.)
 
 **1:00 How the lab works (30 s).** Dashboard, Lab view.
-"The forecaster is a readable Python formula. Agents read the literature, pick one idea, change one thing, and the change is tested on the past: fit on one window, kept only if it wins on a later window and doesn't lose on a still later one. The agents never see those answers; the code runs in a sandbox with no network and no files."
+"The forecaster is a readable Python formula. Each proposal is one model that sees the current formula, where it fails, the lab's notebook of what has been tried, and a board of ideas scouted from search. It changes one thing, says where the idea came from, and the change is tested on the past: fit on one window, kept only if it wins on a later window and doesn't lose on a still later one. The agents never see those answers; the code runs in a sandbox with no network and no files."
 Show the score curve stepping down and the ledger of claims with sources.
 Number to say: changes tested, changes kept, error before and after. **[final]** (First long run, 18 generations, $15: 108 changes tested, 12 passed the rule, 8 were adopted; error 2.80 to 2.44 cm on the selection window and 3.24 to 2.74 cm on the confirmation window. The lab sees its score on both windows, so the clean number is the test window.)
 
@@ -28,7 +28,7 @@ Number to say: changes tested, changes kept, error before and after. **[final]**
 - Memory: none, full context, vector store, past.dev; error, minutes and dollars to a fixed target. **[final]**
 
 **2:20 Limits (20 s).**
-"Three things we want you to know. One: our own checker caught our first backtest using weather that wasn't available at the time; fixed, and the 24-hour number went from 3.7 to 4.0 cm. Two: the hand-written starting formula is no better than 'the current gap continues' at one hour ahead; whether the lab's forecaster is better there is decided by the test window and the sealed forecasts, and we show whichever it is. Three: it's one season and one weekend."
+"Four things we want you to know. Zero: our first design, a three-role swarm, lost to a single agent in our own controlled test, so we rebuilt it and now measure what memory and search add. **[final: say what the ladder showed, including if they added nothing]** One: our own checker caught our first backtest using weather that wasn't available at the time; fixed, and the 24-hour number went from 3.7 to 4.0 cm. Two: the hand-written starting formula is no better than 'the current gap continues' at one hour ahead; whether the lab's forecaster is better there is decided by the test window and the sealed forecasts, and we show whichever it is. Three: it's one season and one weekend."
 
 **2:40 Next (20 s).**
 "The same lab ran on [Pacific's GPU prices] this weekend: here are its sealed forecasts for next week's prices. The chain keeps running after we leave, so you can check us."

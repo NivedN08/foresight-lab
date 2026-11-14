@@ -83,7 +83,7 @@ Fit on train inside the sandbox; predict select and confirm; compute losses in t
 
 ## 7. Research loop
 
-Per proposal: a failure digest computed by code; analyst (diagnosis, hypothesis, a knowledge gap); closed-book answer; search and extraction of one claim; engineer writes the full candidate; evaluate; decide in code; write a finding.
+Per proposal: a failure digest computed by code, then ONE call to a strong model that sees the problem, the current forecaster, the digest, the notebook (if on) and a board of scouted ideas (if search is on), and writes the full candidate with a header saying what changed and where the idea came from (own, notebook, search). Evaluate; decide in code; write a finding. Scouting runs once per generation with a small model.
 
 Decision rule: wins on select (95% of block resamples, at least 0.3% lower loss) and is not worse on confirm.
 
@@ -91,7 +91,9 @@ Lessons from the first runs:
 - The confirm window matters: the first proposal that improved select was worse on confirm.
 - Ten generations of six proposals took 14 minutes and about $7 with a small model for analysis and a mid-size model for code, and cut loss by 12% on select and 15% on confirm.
 - Keyless scholarly search is rate-limited and often off-topic; retry, fall back, and record which backend answered.
-- Make the engineer change one thing per proposal, or findings cannot be interpreted.
+- Make each proposal change one thing, or findings cannot be interpreted.
+- Do not build the three-role pipeline (analyst, scout, engineer made to implement the scouted idea). We built it first and a single strong model beat it at a third of the cost per proposal. Give the strong model the notebook and the scouted ideas as optional inputs instead.
+- Keep confirm-window figures out of everything the agents read; tell them only whether the later-window check passed.
 
 ## 8. Dashboard
 

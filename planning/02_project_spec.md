@@ -21,8 +21,9 @@ This lab removes both excuses. It tests ideas from the literature against measur
                      |  search
    +-----------------v------------------+
    |            research lab            |      lab notebook
-   |  analyst -> scout -> engineer      |<---> (dated findings,
-   |      one small code change         |       shared, superseded)
+   |  one researcher per proposal; it   |<---> (dated findings,
+   |  may use the notebook and a board  |       shared, superseded)
+   |  of scouted ideas, or its own idea |
    +-----------------+------------------+
                      | candidate forecaster (readable Python)
    +-----------------v------------------+
@@ -47,7 +48,7 @@ This lab removes both excuses. It tests ideas from the literature against measur
 | Any time series | `lab/tasks/series/` | A CSV in, a problem out; for the track task |
 | Sandbox | `lab/sandbox/` | Runs agent-written code with no network, no files, no truths |
 | Evaluator | `lab/evalpool/` | Fits and scores candidates; paired block statistics |
-| Research loop | `lab/swarm/` | Roles, decision rule, logging, warm starts |
+| Research loop | `lab/swarm/` | Proposal modes (researcher, single agent, the older three-role pipeline, random mutation), decision rule, logging, warm starts |
 | Notebook | `lab/memory/` | none, full context, vector store, past.dev |
 | Search | `lab/search/` | OpenAlex, arXiv, Exa |
 | Model backends | `lab/llm/` | Claude command-line tool (no key), OpenAI-compatible, Anthropic |
@@ -80,6 +81,10 @@ All numbers below come from commands in the repo. Test-window results are not ye
 | Lab, first 10 generations (14 minutes, about $7) | Error on the select window 2.80 to 2.47 cm; on the confirm window 3.24 to 2.74 cm. After 18 generations ($15): 2.44 and 2.74; 108 changes tested, 12 passed, 8 adopted |
 | Live sealed forecasts, first evening, hand-written models only | 1 h: tide table 54.2 cm, "gap continues" 2.72, damped 2.62, starting formula 2.66 (92 forecasts). 3 h: 54.5, 4.94, 4.46, 3.9 (46 forecasts). No lab forecast had been graded yet |
 | Leak found by our own check | With near-final weather the 24 h figure looked like 3.7 cm; fixed to 4.0 cm |
+
+### What the first design taught us
+
+The first version of the lab was a pipeline: a small model diagnosed, a small model scouted one idea from search, and a stronger model had to implement exactly that idea. In the first controlled comparison (2 seeds, 48 proposals each) a single strong model with no search and no memory beat it: 2.70 cm against 3.00 cm on the confirm window, at a third of the cost per proposal. Random code changes did nothing (3.24 cm). So the loop was rebuilt: one strong model per proposal, which is shown the notebook and a board of scouted ideas and may use them or not, and records which. Whether the notebook and search add anything on top of the single model is now measured as a ladder rather than assumed.
 
 ## Limits
 
