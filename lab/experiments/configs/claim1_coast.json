@@ -1,0 +1,40 @@
+{
+ "name": "claim1_coast",
+ "comment": "Claim 1: the lab beats simple ways of using the same budget. Same problem, budget and decision rule; only how proposals are made differs. Compare swarm against single_agent and random_mutation on final confirm loss and time to target. Small default budget; raise generations and seeds for the real run.",
+ "problem": "coast_water",
+ "budget": {
+  "generations": 6,
+  "proposals": 4,
+  "max_cost_usd": 5.0
+ },
+ "seeds": [
+  1,
+  2
+ ],
+ "arms": [
+  {
+   "name": "swarm",
+   "comment": "The full lab: analyst, closed-book, scout with search (OpenAlex, then arXiv if it fails), engineer, vector memory.",
+   "mode": "swarm",
+   "memory": "vector",
+   "search": "openalex",
+   "search_fallback": [
+    "arxiv"
+   ]
+  },
+  {
+   "name": "single_agent",
+   "comment": "One model call per proposal sees the description, the incumbent and the error digest and writes the candidate. No roles, search or memory.",
+   "mode": "single_agent",
+   "memory": "none",
+   "search": "none"
+  },
+  {
+   "name": "random_mutation",
+   "comment": "No model: constants perturbed or one term dropped at random. What the evaluation budget buys without any intelligence.",
+   "mode": "random_mutation",
+   "memory": "none",
+   "search": "none"
+  }
+ ]
+}

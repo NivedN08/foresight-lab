@@ -1,0 +1,48 @@
+{
+ "name": "claim3_search_coast",
+ "comment": "Claim 3: search finds what the model did not already know. Same lab with vector memory; only the search backend differs. No fallback inside an arm, so each arm measures one backend (a failed search falls back to a closed-book claim and is counted as failed). Read the Search table: claims from search, accepted, share not known closed-book, accepted per 100 searches.",
+ "problem": "coast_water",
+ "budget": {
+  "generations": 6,
+  "proposals": 4,
+  "max_cost_usd": 5.0
+ },
+ "seeds": [
+  1,
+  2
+ ],
+ "arms": [
+  {
+   "name": "search_openalex",
+   "mode": "swarm",
+   "memory": "vector",
+   "search": "openalex",
+   "search_fallback": []
+  },
+  {
+   "name": "search_arxiv",
+   "mode": "swarm",
+   "memory": "vector",
+   "search": "arxiv",
+   "search_fallback": []
+  },
+  {
+   "name": "search_off",
+   "comment": "No search: every claim is closed-book. The reference for what search adds.",
+   "mode": "swarm",
+   "memory": "vector",
+   "search": "none"
+  },
+  {
+   "name": "search_exa",
+   "comment": "Requires EXA_API_KEY; skipped with a message when it is not set.",
+   "mode": "swarm",
+   "memory": "vector",
+   "search": "exa",
+   "search_fallback": [],
+   "requires_env": [
+    "EXA_API_KEY"
+   ]
+  }
+ ]
+}
