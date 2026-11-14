@@ -1,6 +1,6 @@
 # Project spec
 
-Working name: **foresight-lab**. Headline application: the sea on the California coast (pending the team's final pick between coast and turbulence; the other stays as the second problem).
+Working name: **foresight-lab**. Headline application: the sea on the US West Coast (chosen Nov 13). Aviation turbulence is the second problem, used to test whether a lab that has worked on one problem is faster on another.
 
 ## One sentence
 
