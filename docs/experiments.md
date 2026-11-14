@@ -180,6 +180,29 @@ no notebook 2.806 cm (6 runs), vector notebook 2.805 cm (6 runs). On this proble
 2.68 to 2.70 cm in all four of its runs. The ladder was extended to five seeds for the three
 arms without search so that this can be tested rather than eyeballed.
 
+## What the search experiment showed
+
+`runs/exp/claim3_search_coast` (researcher mode, vector notebook, seeds 1 and 2; one search source
+per arm, no fallback; the OpenAlex and Exa arms were skipped because no key is set). This time
+search worked: 71 searches, none failed. Confirm loss of the final forecaster, cm:
+
+| arm | seed 1 | seed 2 | $ per run | minutes per run | ideas offered | used | passed | adopted |
+|---|---|---|---|---|---|---|---|---|
+| search_off | 2.562 | 2.765 | 1.31 | 4.0 | n/a | n/a | n/a | n/a |
+| search_crossref | 2.767 | 2.822 | 1.85 | 8.8 | 45 | 8 | 3 | 2 |
+| search_arxiv | 2.685 | 2.838 | 1.93 | 8.8 | 41 | 11 | 2 | 1 |
+
+- Search did not lower the final loss. Both search arms ended slightly above the arm without
+  search, inside run-to-run noise, at about 45% more cost and twice the time.
+- The researcher took an idea from the board in 19 of 96 proposals. Five of those passed the
+  rule and three became the forecaster in use.
+- Four of the five were the same idea, adding the neighbouring gauges' recent anomalies, which
+  the model had already listed closed-book before seeing the board. The sources it credited were
+  loose (one was a paper on urban water demand). One passed change, lagged means of the gauge's
+  own residual, was not on the closed-book list; it was not adopted.
+- So with keyless scholarly search, on this problem and budget, search found nothing useful that
+  the model did not already know. The Exa arm is the open question and needs a key.
+
 ## The ready-made matrices
 
 All four use small budgets: 6 generations x 4 proposals, seeds 1 and 2, a $4 cap per run, and the
