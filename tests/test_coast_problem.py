@@ -330,3 +330,98 @@ def test_seed_matches_seed_physics_on_cached_real_splits():
     res = run_candidate(SEED_SOURCE, train, tt, ev, time_limit_s=120)
     assert res.ok, res.error
     assert np.abs(np.array([q["residual_m"] for q in res.predictions]) - want).mean() < 0.001
+
+
+# ------------------------------------------- live cases match the lab's cases
+def _shape(v):
+    if isinstance(v, np.ndarray):
+        return ("array", v.shape, v.dtype.kind)
+    if isinstance(v, list):
+        return ("list", tuple(_shape(x) for x in v))
+    if isinstance(v, dict):
+        return ("dict", tuple(sorted((k, _shape(x)) for k, x in v.items())))
+    if isinstance(v, (bool, np.bool_)):
+        return "bool"
+    if isinstance(v, (int, np.integer)):
+        return "int"
+    if isinstance(v, float):
+        return "float"
+    return type(v).__name__
+
+
+def test_live_cases_have_the_same_keys_and_shapes_as_history_cases():
+    hidx = pd.date_range(START, END + pd.Timedelta(days=3), freq="h", tz="UTC")
+    newest = pd.DataFrame({"wave_height": 2.2 + 0.4 * np.cos(np.arange(len(hidx)) / 9.0)}, index=hidx)
+    b = make_buoy()
+    data = make_data(buoy=Buoy("B1", b.lat, b.lon, b.obs, b.model_runs, newest))
+    live_issue = ISSUE + timedelta(minutes=36)       # live issue times sit on the 6-minute grid
+    for lead in (1, 3, 6, 12, 24):
+        hist = build_problem_case(data, "S2", ISSUE - timedelta(days=2), lead, weather="runs")
+        live = build_problem_case(data, "S2", live_issue, lead, weather="latest")
+        assert hist.inputs.keys() == live.inputs.keys()
+        assert {k: _shape(v) for k, v in hist.inputs.items()} == {k: _shape(v) for k, v in live.inputs.items()}
+        assert live.inputs["has_weather"] and live.inputs["wx_run_age_h"] == 0.0
+        assert hist.inputs["wx_run_age_h"] in (24.0, 48.0)
+        # the live case reads the newest forecasts, not the previous runs
+        f = data.feats["S2"]
+        assert live.inputs["wx_p"][0] == pytest.approx(
+            float(np.interp(live_issue.timestamp(), f.w_t, f.w_p)), abs=0.006)
+        assert live.inputs["wave_fc_hs_target"] == pytest.approx(
+            float(np.interp(live.target_time.timestamp(), *data.buoys["B1"].latest)))
+    # and both match the lab's own windows
+    sp = _splits()
+    lab_case = next(c for c in sp.train.cases if c.inputs["lead_h"] == 6 and c.inputs["station"] == "S2")
+    live = build_problem_case(data, "S2", live_issue, 6, weather="latest")
+    assert {k: _shape(v) for k, v in lab_case.inputs.items()} == {k: _shape(v) for k, v in live.inputs.items()}
+
+
+# ------------------------------------------------------------- promote command
+def _run_dir(tmp_path, source):
+    import hashlib
+    import json
+    d = tmp_path / "runs" / "20261114T000000Z-s1-abcd"
+    d.mkdir(parents=True)
+    (d / "incumbent.py").write_text(source)
+    h = hashlib.sha256(source.encode()).hexdigest()[:16]
+    (d / "summary.json").write_text(json.dumps({"curve": [
+        {"generation": 0, "incumbent_hash": "x"}, {"generation": 3, "incumbent_hash": h},
+        {"generation": 4, "incumbent_hash": h}]}))
+    return d
+
+
+def test_promote_writes_source_and_sidecar(tmp_path):
+    import hashlib
+    import json
+    from test_evalpool import LINEAR, SynthProblem
+    from lab.tasks.coast.promote import load_promoted, promote
+    out = tmp_path / "promoted"
+    side = promote(_run_dir(tmp_path, LINEAR), "lab-x", out_dir=out, problem=SynthProblem(), log=lambda *a: None)
+    assert (out / "lab-x.py").read_text() == LINEAR
+    saved = json.loads((out / "lab-x.json").read_text())
+    assert saved == side
+    assert saved["source_sha256"] == hashlib.sha256(LINEAR.encode()).hexdigest()
+    assert saved["run_id"] == "20261114T000000Z-s1-abcd" and saved["generation"] == 3
+    assert saved["model"] == "Lab:lab-x" and saved["promoted_at"].endswith("Z")
+    assert 0 < saved["select_loss"] < 0.3 and 0 < saved["confirm_loss"] < 0.3
+    (loaded,) = load_promoted(out)
+    assert loaded.name == "lab-x" and loaded.model == "Lab:lab-x"
+    # a source edited after promotion no longer matches its sidecar and is skipped
+    (out / "lab-x.py").write_text(LINEAR + "\n# edited\n")
+    assert load_promoted(out, log=lambda *a: None) == []
+
+
+@pytest.mark.parametrize("source, why", [
+    ("import os\nclass Forecaster:\n    name = 'x'\n    def fit(self, c, t):\n        pass\n"
+     "    def predict(self, c):\n        return {'y': 0.0}\n", "lint"),
+    ("class Forecaster:\n    name = 'x'\n    def fit(self, c, t):\n        raise ValueError('no')\n"
+     "    def predict(self, c):\n        return {'y': 0.0}\n", "evaluation"),
+])
+def test_promote_refuses_bad_candidates(tmp_path, source, why):
+    from test_evalpool import SynthProblem
+    from lab.tasks.coast.promote import Refused, promote
+    out = tmp_path / "promoted"
+    with pytest.raises(Refused, match=why):
+        promote(_run_dir(tmp_path, source), "lab-x", out_dir=out, problem=SynthProblem(), log=lambda *a: None)
+    assert not out.exists() or not any(out.iterdir())
+    with pytest.raises(Refused, match="name"):
+        promote(_run_dir(tmp_path / "b", source), "Bad Name", out_dir=out, problem=SynthProblem())

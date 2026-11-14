@@ -82,12 +82,14 @@ def neighbours(stations: dict[str, StationData]) -> dict[str, list[tuple[str, fl
 
 @dataclass
 class Buoy:
-    """One coastal buoy: its reports and the leak-free wave-model runs at its position."""
+    """One coastal buoy: its reports, the leak-free wave-model runs at its position
+    (history) and, for live cases, the newest wave-model forecast."""
     id: str
     lat: float
     lon: float
     obs: pd.DataFrame                     # NDBC realtime2 (WVHT m, DPD s), UTC index
     model_runs: dict[int, pd.DataFrame] = field(default_factory=dict)  # k -> wave_height (m)
+    model_latest: pd.DataFrame | None = None   # newest run (marine endpoint), live cases only
 
     def __post_init__(self):
         h = self.obs["WVHT"] if "WVHT" in self.obs else pd.Series(dtype=float)
@@ -101,6 +103,11 @@ class Buoy:
             if df is not None and "wave_height" in df:
                 m = df["wave_height"].dropna()
                 self.runs[int(k)] = (np.array([_epoch(x) for x in m.index]), m.to_numpy(float))
+        self.latest = None
+        if self.model_latest is not None and "wave_height" in self.model_latest:
+            m = self.model_latest["wave_height"].dropna()
+            if len(m):
+                self.latest = (np.array([_epoch(x) for x in m.index]), m.to_numpy(float))
 
     def now(self, issue_epoch: float) -> tuple[float, float]:
         """Newest report at or before the issue time (height, period), NaN if
@@ -110,8 +117,10 @@ class Buoy:
             return float("nan"), float("nan")
         return float(self.h[j]), float(self.p[j])
 
-    def model_target(self, lead_h: int, target_epoch: float) -> float:
-        src = self.runs.get(run_offset_days(lead_h))
+    def model_target(self, lead_h: int, target_epoch: float, weather: str = "runs") -> float:
+        """Wave-model height at the target: from the previous run that was published
+        before the issue time ("runs"), or from the newest run ("latest", live only)."""
+        src = self.latest if weather == "latest" else self.runs.get(run_offset_days(lead_h))
         if src is None:
             return float("nan")
         return float(np.interp(target_epoch, src[0], src[1], left=np.nan, right=np.nan))
@@ -136,6 +145,17 @@ class CoastData:
                 near[sid] = (b.id, great_circle_km(sd.lat, sd.lon, b.lat, b.lon))
         return cls(feats, buoys, near, neighbours(stations))
 
+    @classmethod
+    def from_feats(cls, feats: dict[str, StationFeatures], buoys: dict[str, Buoy]) -> "CoastData":
+        """Reuse already built station features (the live loop's)."""
+        stations = {sid: f.sd for sid, f in feats.items()}
+        near = {}
+        for sid, sd in stations.items():
+            if buoys:
+                b = min(buoys.values(), key=lambda b: great_circle_km(sd.lat, sd.lon, b.lat, b.lon))
+                near[sid] = (b.id, great_circle_km(sd.lat, sd.lon, b.lat, b.lon))
+        return cls(feats, buoys, near, neighbours(stations))
+
 
 def _hist(f: StationFeatures, i: int, n: int) -> np.ndarray:
     idx = i - PER_HOUR * np.arange(n)
@@ -151,11 +171,21 @@ def issue_ok(f: StationFeatures, i: int) -> bool:
     return 0 <= i < f.n and current_residual(f, i) is not None and not np.isnan(f.r_mean[i])
 
 
-def build_problem_case(data: CoastData, sid: str, issue: datetime, lead_h: int) -> Case | None:
-    """The base water case (weather from previous runs only) plus the richer
-    inputs. Every value is knowable at `issue`."""
+CASE_WEATHER = ("runs", "latest")
+
+
+def build_problem_case(data: CoastData, sid: str, issue: datetime, lead_h: int,
+                       weather: str = "runs") -> Case | None:
+    """The base water case plus the richer inputs. Every value is knowable at `issue`.
+
+    weather="runs" (history, the lab's windows): weather and wave-model values from a
+    run published before the issue time. weather="latest" (a live issue time only):
+    the newest forecast, which is what is really available at that moment; then
+    `wx_run_age_h` is 0. Keys, units and array lengths are the same in both modes."""
+    if weather not in CASE_WEATHER:
+        raise ValueError(f"weather must be one of {CASE_WEATHER}")
     f = data.feats[sid]
-    base = build_case(f, issue, lead_h, weather="runs")
+    base = build_case(f, issue, lead_h, weather=weather)
     if base is None:
         return None
     i = f.index(issue)
@@ -167,12 +197,12 @@ def build_problem_case(data: CoastData, sid: str, issue: datetime, lead_h: int) 
     # tide table for each hour issue..target (deterministic, allowed)
     inp["tide_fwd"] = _r4([f.tide_at(issue + timedelta(hours=k)) for k in range(lead_h + 1)])
     # weather for each hour issue..target from one run published before issue
-    w = f.weather_hours(issue, lead_h, weather="runs")
+    w = f.weather_hours(issue, lead_h, weather=weather)
     nanv = np.full(lead_h + 1, np.nan)
     inp["wx_p"] = np.round(w["p"], 2) if w else nanv
     inp["wx_u"] = np.round(w["u"], 3) if w else nanv.copy()
     inp["wx_v"] = np.round(w["v"], 3) if w else nanv.copy()
-    inp["wx_run_age_h"] = float(w["run_age_h"]) if w else float("nan")
+    inp["wx_run_age_h"] = (float(w["run_age_h"] or 0.0)) if w else float("nan")
     # neighbouring gauges along the coast
     nb = []
     for oid, km, side in data.nbrs.get(sid, []):
@@ -193,7 +223,7 @@ def build_problem_case(data: CoastData, sid: str, issue: datetime, lead_h: int) 
         bid, km = data.nearest_buoy[sid]
         b = data.buoys[bid]
         hs, tp = b.now(_epoch(issue))
-        fc = b.model_target(lead_h, _epoch(base.target_time))
+        fc = b.model_target(lead_h, _epoch(base.target_time), weather)
     inp.update(buoy_id=bid, buoy_dist_km=round(float(km), 1), buoy_hs_now=hs, buoy_tp_now=tp,
                wave_fc_hs_target=fc)
     return Case(base.case_id, base.issue_time, base.target_time, inp)
@@ -285,14 +315,23 @@ def build_splits(data: CoastData, start: datetime, end: datetime, sizes: dict[st
 def load_coast_data(client: Client, until: datetime, days: int, log=print) -> CoastData:
     """Gauges, tide table, previous-run weather, buoys and previous-run wave model."""
     from .data import load_stations
-    from .waves import BUOY_META_URL, COASTAL, parse_buoy_meta
     stations = load_stations(client, until, days, with_weather=False, weather_runs=True, log=log)
+    buoys = load_buoys_for_cases(client, until, days, log=log)
+    start = pd.Timestamp(until) - pd.Timedelta(days=days + 4)
+    return CoastData.from_parts(stations, buoys, start, pd.Timestamp(until))
+
+
+def load_buoys_for_cases(client: Client, until: datetime, days: int, log=print,
+                         latest: bool = False) -> dict[str, Buoy]:
+    """Coastal buoys with reports up to `until`, previous-run wave-model history
+    and (latest=True, live) the newest wave-model forecast."""
+    from .waves import BUOY_META_URL, COASTAL, parse_buoy_meta
     buoys: dict[str, Buoy] = {}
     try:
         meta = parse_buoy_meta(client.get_text(BUOY_META_URL, ttl=30 * 86400.0))
     except Exception as e:  # noqa: BLE001 - buoys are optional inputs
         log(f"  buoy list unavailable: {e}")
-        meta = {}
+        return buoys
     raw = {}
     for b in COASTAL:
         if b not in meta:
@@ -308,11 +347,12 @@ def load_coast_data(client: Client, until: datetime, days: int, log=print) -> Co
     pts = [(meta[b]["lat"], meta[b]["lon"]) for b in raw]
     runs = S.fetch_marine_runs(client, pts, (until - timedelta(days=days + 4)).date(), until.date(),
                                S.now_utc()) if pts else None
+    newest = S.fetch_marine(client, pts, past_days=1) if (pts and latest) else None
     for j, b in enumerate(raw):
         buoys[b] = Buoy(b, meta[b]["lat"], meta[b]["lon"], raw[b],
-                        {k: dfs[j] for k, dfs in runs.items()} if runs else {})
-    start = pd.Timestamp(until) - pd.Timedelta(days=days + 4)
-    return CoastData.from_parts(stations, buoys, start, pd.Timestamp(until))
+                        {k: dfs[j] for k, dfs in runs.items()} if runs else {},
+                        newest[j] if newest else None)
+    return buoys
 
 
 def data_until(client: Client, now: datetime, days: int, log=print) -> datetime:

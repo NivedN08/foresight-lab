@@ -49,6 +49,7 @@ model, at most one per target hour. Errors are absolute errors in **cm**.
 | `wave_sealed_this_cycle` / `wave_graded_this_cycle` | the same for waves |
 | `stations_sealed_this_cycle` | tide gauges that got new forecasts this cycle (0 when the hour was already covered) |
 | `seconds` | how long the cycle took |
+| `promoted_seconds` | of which spent on promoted lab forecasters (0 except once an hour, when they are refitted) |
 | `fetch_log` | recent data-source problems (failed requests, stale cache used, weather unavailable) |
 
 ## `water`
@@ -59,11 +60,31 @@ model, at most one per target hour. Errors are absolute errors in **cm**.
 | `leads_h` | `[1, 3, 6, 12, 24]` |
 | `models` | `TideTable` (residual 0, what the official table implies), `Persistence`, `DampedPersistence`, `SeedPhysics`. `TideTable` is off by about 32 cm because this is an unusually high sea-level season: the offset is positive at every gauge and has been rising since summer (San Francisco +24 cm over 90 days, +37 cm in November; the same weeks of 2024 and 2025 gave 0 to +8.5 cm) |
 | `fit` | `fitted_at`, `train_cases`, `train_from`: the models are refitted every hour on cases whose target time is before now |
+| `promoted` | forecasters written by the research lab and promoted into this job (below); their forecasts appear under each station's `forecasts` and in `scoreboard` with the model name `Lab:<name>` |
 | `stations` | one entry per tide gauge (below) |
 | `scoreboard` | live results from graded sealed forecasts: `scoreboard[model][lead] = {"graded": n, "mae_cm": x}`; empty until the first forecasts come due |
 | `forecast_window` | `from` / `to`: sealed forecasts with target times in this window are listed under each station |
 | `stale` | due forecasts whose gauge has not reported for more than 6 hours after the target: `{seq, station, model, target_time}`; they stay ungraded |
 | `backtest` | copy of `runs/coast/backtest.json`: `table[model][lead] = {mae_cm, low, high, n}` (95% bootstrap interval), `paired_seed_vs[Persistence or DampedPersistence][lead] = {seed_mae, other_mae, diff_cm, low, high, p_seed_better, n}` (negative `diff_cm` means SeedPhysics has the lower error), `days`, `unit`, `note`. The intervals resample single cases; neighbouring hours and stations are correlated, so they are narrower than they should be. Since 2026-11-13 the backtest's weather inputs come from the Open-Meteo Previous Runs archive (a run published before each issue time); the older stitched "hindsight" weather leaked the future and is kept only as `runs/coast/backtest_hindsight.json` |
+
+### `water.promoted[]`
+
+A promoted forecaster is a candidate file in `runs/lab/promoted/coast_water/<name>.py` with a sidecar
+`<name>.json`, written by `python -m lab.tasks.coast.promote --run runs/lab/coast_water/<run_id> --name <name>`
+(which lints it and evaluates it once on the lab's select and confirm windows; failures are refused).
+Once an hour the live job fits it in the sandbox on a stratified sample of 12,000 hourly cases from the
+fit window (targets before now, previous-run weather, the same inputs the lab's `CoastWaterProblem`
+gives) and predicts the live cases, built with the newest forecast. Its predictions are sealed like any
+other model's. If it fails or times out, nothing is sealed for it that hour and `status` says why.
+
+| field | meaning |
+|---|---|
+| `name`, `model` | e.g. `lab-a` and `Lab:lab-a` (the model name in the ledger, `forecasts` and `scoreboard`) |
+| `source_sha256` | SHA-256 of the candidate source (also in every sealed record's `meta`) |
+| `run_id`, `generation` | the lab run it came from and the generation at which it became that run's incumbent |
+| `select_loss`, `confirm_loss` | mean absolute error (cm) on the lab's select and confirm windows when it was promoted |
+| `promoted_at` | when it was promoted |
+| `status` | the last hourly run: `last_run`, `seconds`, `ok`, `error` (or `null`), `sealed` (forecasts sealed); `null` before the first run |
 
 ### `water.stations[]`
 

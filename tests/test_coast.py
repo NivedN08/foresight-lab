@@ -601,3 +601,138 @@ def test_live_cycle_gets_weather_from_fallback_host(tmp_path):
     assert wc.feats["9414290"].has_weather
     recs = SealedLedger(tmp_path / "live").sealed()
     assert recs and all(r["meta"]["has_weather"] for r in recs)
+
+
+# ------------------------------------------------ promoted lab forecasters
+PROMOTED_GOOD = '''
+import numpy as np
+
+
+class Forecaster:
+    name = "mean-offset"
+
+    def fit(self, cases, truths):
+        i = cases[0].inputs
+        assert len(i["r_hist72"]) == 72 and len(i["nbr"]) == 4 and len(i["wx_p"]) == i["lead_h"] + 1
+        self.b = float(np.mean([t["residual_m"] - c.inputs["r_mean"] for c, t in zip(cases, truths)]))
+
+    def predict(self, case):
+        i = case.inputs
+        assert len(i["wx_p"]) == i["lead_h"] + 1 and len(i["tide_fwd"]) == i["lead_h"] + 1
+        assert len(i["r_hist72"]) == 72 and len(i["nbr"]) == 4 and i["has_weather"]
+        return {"residual_m": float(i["r_mean"] + self.b)}
+'''
+PROMOTED_BAD = '''
+class Forecaster:
+    name = "broken"
+
+    def fit(self, cases, truths):
+        raise ValueError("this one always fails")
+
+    def predict(self, case):
+        return {"residual_m": 0.0}
+'''
+
+
+def _promote_files(d, name, source):
+    import hashlib
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.py").write_text(source)
+    (d / f"{name}.json").write_text(json.dumps({
+        "name": name, "model": f"Lab:{name}", "source_sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "run_id": "test-run", "generation": 2, "select_loss": 2.5, "confirm_loss": 2.7,
+        "promoted_at": "2026-11-13T20:00:00Z"}))
+
+
+def test_promoted_forecaster_is_sealed_graded_and_chained(tmp_path, monkeypatch):
+    import lab.sandbox.runner as sbx
+    from lab.tasks.coast.live import WaterCycle, cycle
+
+    pdir = tmp_path / "promoted"
+    _promote_files(pdir, "lab-t", PROMOTED_GOOD)
+    _promote_files(pdir, "lab-bad", PROMOTED_BAD)
+    calls = []
+    real = sbx.run_prepared
+    monkeypatch.setattr(sbx, "run_prepared", lambda *a, **k: calls.append(1) or real(*a, **k))
+
+    clock = FakeClock(T0)
+    client = FakeClient(clock)
+    wc = WaterCycle(client, fit_days=6, stations=["9414290", "9410170"], log=lambda *a: None, promoted_dir=pdir)
+    ledger_dir = tmp_path / "live"
+    s1 = cycle(clock=clock, client=client, ledger_dir=ledger_dir, wc=wc, log=lambda *a: None)
+    assert s1["ledger"]["records"] == 2 * 5 * (4 + 1)          # four models + Lab:lab-t; nothing for lab-bad
+    assert len(calls) == 2
+    prom = {p["name"]: p for p in s1["water"]["promoted"]}
+    assert prom["lab-t"]["status"]["ok"] and prom["lab-t"]["status"]["sealed"] == 10
+    assert not prom["lab-bad"]["status"]["ok"] and "always fails" in prom["lab-bad"]["status"]["error"]
+    assert prom["lab-t"]["select_loss"] == 2.5 and prom["lab-t"]["run_id"] == "test-run"
+    assert "Lab:lab-t" in s1["water"]["models"]
+    st = {s["id"]: s for s in s1["water"]["stations"]}
+    assert len(st["9414290"]["forecasts"]["Lab:lab-t"]["lead_h"]) == 5
+    assert s1["cycle"]["promoted_seconds"] > 0
+
+    # 15 minutes later, same hour: no refit, no new records
+    clock.advance(minutes=15)
+    s2 = cycle(clock=clock, client=client, ledger_dir=ledger_dir, wc=wc, log=lambda *a: None)
+    assert s2["ledger"]["records"] == s1["ledger"]["records"] and len(calls) == 2
+    assert s2["cycle"]["promoted_seconds"] < 1
+
+    # a day later the promoted forecasts are graded by the gauge, like everyone else's
+    clock.advance(hours=25)
+    s3 = cycle(clock=clock, client=client, ledger_dir=ledger_dir, wc=wc, log=lambda *a: None)
+    led = SealedLedger(ledger_dir)
+    ok, n, msg = led.verify()
+    assert ok, msg
+    lab = [r for r in led.joined() if r["model"] == "Lab:lab-t" and r["meta"]["station"] == "9414290"]
+    first = [r for r in lab if r["seq"] < s1["ledger"]["records"]]
+    assert len(first) == 5 and all(r["grade"] is not None for r in first)
+    assert all(r["meta"]["promoted"] == "lab-t" and len(r["meta"]["source_sha256"]) == 64 for r in lab)
+    assert s3["water"]["scoreboard"]["Lab:lab-t"]["1"]["graded"] >= 1
+    assert s3["ledger"]["verify"]["ok"]
+
+
+def test_promoted_runner_crash_does_not_break_the_cycle(tmp_path, monkeypatch):
+    from lab.tasks.coast import promote as P
+    from lab.tasks.coast.live import WaterCycle, cycle
+
+    pdir = tmp_path / "promoted"
+    _promote_files(pdir, "lab-t", PROMOTED_GOOD)
+    monkeypatch.setattr(P, "load_buoys_for_cases", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    clock = FakeClock(T0)
+    client = FakeClient(clock)
+    wc = WaterCycle(client, fit_days=6, stations=["9414290"], log=lambda *a: None, promoted_dir=pdir)
+    s = cycle(clock=clock, client=client, ledger_dir=tmp_path / "live", wc=wc, log=lambda *a: None)
+    assert s["ledger"]["records"] == 5 * 4 and s["ledger"]["verify"]["ok"]
+    (row,) = s["water"]["promoted"]
+    assert row["status"]["ok"] is False and "boom" in row["status"]["error"]
+
+
+def test_live_promoted_cases_match_problem_history_cases(tmp_path):
+    """Through the live code path: a live case for a promoted forecaster has the
+    same keys and shapes as a history case it is fitted on."""
+    from lab.tasks.coast.live import WaterCycle
+    from lab.tasks.coast.problem import CoastData, build_problem_case, load_buoys_for_cases
+
+    clock = FakeClock(T0)
+    client = FakeClient(clock)
+    wc = WaterCycle(client, fit_days=6, stations=["9414290", "9410170"], log=lambda *a: None,
+                    promoted_dir=tmp_path)
+    wc.load(clock())
+    runner_ = wc.promoted
+    data = CoastData.from_feats(wc.feats, load_buoys_for_cases(client, clock(), 6, log=lambda *a: None, latest=True))
+    live = runner_.live_cases(data, clock())
+    hist, truths = runner_.history(data, clock())
+    assert len(live) == 2 * 5 and len(hist) == len(truths) > 100
+    assert all(c.target_time < clock() for c in hist)
+
+    def shapes(c):
+        return {k: (np.shape(v), type(v).__name__) if not isinstance(v, list) else
+                [{kk: (np.shape(vv), type(vv).__name__) for kk, vv in n.items()} for n in v]
+                for k, v in c.inputs.items()}
+
+    for c in live:
+        h = next(x for x in hist if x.inputs["lead_h"] == c.inputs["lead_h"]
+                 and x.inputs["station"] == c.inputs["station"])
+        assert shapes(c) == shapes(h)
+        ref = build_problem_case(data, c.inputs["station"], c.issue_time, c.inputs["lead_h"], weather="latest")
+        assert ref.inputs.keys() == c.inputs.keys()

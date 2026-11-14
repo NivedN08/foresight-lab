@@ -52,7 +52,8 @@ class WaterCycle:
     """Everything one cycle needs for the water-level task. Models are refitted
     when the hour changes (fitting uses only cases whose target is before now)."""
 
-    def __init__(self, client: Client, fit_days: int = FIT_DAYS, stations=None, log=print):
+    def __init__(self, client: Client, fit_days: int = FIT_DAYS, stations=None, log=print,
+                 promoted_dir: Path | None = None):
         self.client = client
         self.fit_days = fit_days
         self.stations_ids = stations
@@ -60,6 +61,26 @@ class WaterCycle:
         self.models = None
         self.fitted_hour = None
         self.fit_info: dict = {}
+        # forecasters promoted from the research lab (lab/tasks/coast/promote.py); None = off
+        self.promoted = None
+        if promoted_dir is not None:
+            from .promote import PromotedRunner
+            self.promoted = PromotedRunner(client, promoted_dir, fit_days=fit_days, log=log)
+
+    def promoted_forecasts(self, now: datetime, existing: set) -> list[dict]:
+        """Sealable forecasts of the promoted forecasters (at most one run an hour).
+        Any failure is logged and costs only those forecasts, never the cycle."""
+        if self.promoted is None:
+            return []
+        try:
+            return self.promoted.forecasts(now, self.feats, existing)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"  promoted forecasters failed: {e}")
+            traceback.print_exc()
+            for p in self.promoted.promoted:
+                self.promoted.status[p.name] = {"last_run": to_iso(now), "ok": False,
+                                                "error": f"{type(e).__name__}: {e}", "sealed": 0}
+            return []
 
     def load(self, now: datetime):
         # weather_runs: leak-free previous-run weather for the fit's history;
@@ -249,7 +270,8 @@ def build_state(now: datetime, ledger: SealedLedger, wc: WaterCycle, stale: list
         "water": {
             "quantity": "water level above the tide table (residual), metres; errors in cm",
             "leads_h": list(LEADS),
-            "models": [m.name for m in (wc.models or [])],
+            "models": [m.name for m in (wc.models or [])] + [p.model for p in (wc.promoted.promoted if wc.promoted else [])],
+            "promoted": wc.promoted.state() if wc.promoted else [],
             "fit": wc.fit_info,
             "stations": stations,
             "scoreboard": _scoreboard(joined, TASK, "abs_error_cm"),
@@ -278,6 +300,9 @@ def cycle(clock=utcnow, client: Client | None = None, ledger_dir: Path = LIVE_DI
     wc.fit(now)
     existing = _existing_keys(ledger.sealed(), now, TASK)
     forecasts = wc.live_forecasts(now, existing)
+    t_promoted = time.time()
+    forecasts += wc.promoted_forecasts(now, existing)
+    t_promoted = time.time() - t_promoted
     if forecasts:
         ledger.seal_many(forecasts, now=clock())
     n_graded, stale = grade_due(ledger, clock(), wc.truth, TASK)
@@ -293,7 +318,8 @@ def cycle(clock=utcnow, client: Client | None = None, ledger_dir: Path = LIVE_DI
     info = {"now": to_iso(now), "sealed_this_cycle": len(forecasts), "graded_this_cycle": n_graded,
             "wave_sealed_this_cycle": n_wave_sealed, "wave_graded_this_cycle": n_wave_graded,
             "stations_sealed_this_cycle": len({f["meta"]["station"] for f in forecasts}),
-            "seconds": round(time.time() - t0, 1), "fetch_log": client.log[-10:]}
+            "seconds": round(time.time() - t0, 1), "promoted_seconds": round(t_promoted, 1),
+            "fetch_log": client.log[-10:]}
     # keep the file under about 2 MB: shorten the window of past forecasts if needed
     t_state = clock()
     for past_hours in (24, 12, 6, 2):
@@ -337,14 +363,19 @@ def main():
     ap.add_argument("mode", choices=["once", "run"])
     ap.add_argument("--interval", type=int, default=900)
     ap.add_argument("--no-waves", action="store_true")
+    ap.add_argument("--ledger-dir", type=Path, default=LIVE_DIR, help="ledger and state.json directory")
+    ap.add_argument("--promoted-dir", type=Path, default=None,
+                    help="promoted lab forecasters (default runs/lab/promoted/coast_water)")
+    ap.add_argument("--no-promoted", action="store_true", help="do not run promoted lab forecasters")
     args = ap.parse_args()
     client = Client()
-    wc = WaterCycle(client)
+    from .promote import PROMOTED_DIR
+    wc = WaterCycle(client, promoted_dir=None if args.no_promoted else (args.promoted_dir or PROMOTED_DIR))
     wave = None if args.no_waves else _wave_cycle(client, print)
     while True:
         start = time.time()
         try:
-            cycle(client=client, wc=wc, wave_cycle=wave)
+            cycle(client=client, wc=wc, wave_cycle=wave, ledger_dir=args.ledger_dir)
         except Exception:
             traceback.print_exc()
         if args.mode == "once":
