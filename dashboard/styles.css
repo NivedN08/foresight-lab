@@ -746,3 +746,54 @@ pre.code .ln { display: inline-block; color: var(--ink-soft); opacity: 0.7; marg
 @media (max-width: 900px) {
   .view.lab-view { grid-template-areas: "side" "map" "log"; }
 }
+
+/* ------------------------------------------------------------ lab: one run / experiments switch */
+
+.lab-mode { margin: 12px 20px 2px; align-self: flex-start; font-size: var(--fs-2); }
+.lab-mode button { padding: 6px 16px; font-size: var(--fs-2); }
+.lab-mode button[aria-selected="true"] { color: var(--ink); background: var(--water-shoal); font-weight: 600; }
+.ref-label { fill: var(--tide-blue); }
+.run-list .run-status.st-partial { color: var(--miss); }
+
+/* ------------------------------------------------------------ lab: experiments */
+
+.exp-main { overflow-y: auto; }
+.exp-main > section { border-bottom: 1px solid var(--rule); }
+.exp-chart-wrap { position: relative; }
+.exp-chart-wrap svg.exp-chart { width: 100%; display: block; overflow: visible; }
+.arm-label { font-size: var(--fs-2); fill: var(--ink); font-weight: 500; }
+.arm-partial { font-size: 12px; fill: var(--miss); }
+.arm-range { stroke: var(--ink); stroke-width: 2px; stroke-opacity: 0.45; }
+.arm-mean { stroke: var(--ink); stroke-width: 3px; }
+.seed-dot { fill: var(--ink); stroke: var(--water-deep); stroke-width: 1.5px; cursor: pointer; }
+.seed-dot.unfinished { fill: var(--water-deep); stroke: var(--miss); stroke-width: 2px; }
+.seed-dot:hover, .seed-dot:focus { stroke: var(--ink); stroke-width: 3px; outline: none; }
+
+.exp-question { font-size: clamp(22px, 1.7vw, 30px); }
+.exp-status { font-size: var(--fs-3); margin: 10px 0 0; color: var(--ink); }
+.exp-status .num { font-weight: 600; }
+.partial { color: var(--miss); font-weight: 600; }
+.not-reached { color: var(--miss); }
+
+.exp-block { margin-bottom: 16px; }
+.exp-block h3 { margin: 0 0 4px; font-size: var(--fs-3); font-weight: 600; }
+.exp-block h3 .quiet { font-weight: 400; color: var(--ink-soft); font-size: var(--fs-2); }
+.exp-block .sub { margin: 0 0 6px; }
+.exp-list { margin: 4px 0 0; padding-left: 18px; font-size: var(--fs-2); line-height: 1.45; }
+.exp-list b { font-weight: 600; }
+table.exp-table td, table.exp-table th { white-space: nowrap; }
+table.exp-table tbody th { color: var(--ink); font-size: var(--fs-2); }
+table.exp-table td .partial { font-size: 12px; margin-left: 4px; }
+.exp-side-tables { overflow-x: auto; }
+
+.exp-run-row .exp-run { text-align: left; font: inherit; color: inherit; cursor: pointer; display: block; min-width: 150px; }
+.exp-run-row .exp-run:hover { background: rgba(213, 233, 241, 0.45); }
+.exp-run-row .exp-run.off { cursor: default; opacity: 0.6; }
+.exp-run-row .exp-run .when { color: var(--ink); font-weight: 500; }
+.exp-run-row .exp-run .what { color: var(--ink-soft); font-weight: 400; }
+.exp-run-row .exp-run .what.st-running { color: var(--ink); font-weight: 600; }
+.exp-run-row .exp-run .what.st-crashed, .exp-run-row .exp-run .what.st-failed { color: var(--miss); }
+.grid-run { font: inherit; font-size: var(--fs-2); color: var(--ink); background: none; border: 0; padding: 0; text-align: right; }
+button.grid-run { cursor: pointer; text-decoration: underline; text-decoration-color: var(--grid); text-underline-offset: 3px; }
+.grid-run.st-running { font-weight: 600; }
+.grid-run.st-other { color: var(--ink-soft); }

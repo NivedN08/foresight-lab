@@ -143,8 +143,10 @@ LAB_RUNS = RUNS / "lab"   # research-lab runs: runs/lab/<problem>/<run_id>/
 @app.get("/api/lab/runs")
 def lab_runs():
     """Every research-lab run, newest first, read from each run's summary.json."""
-    from lab.swarm.runs_index import list_runs
-    return JSONResponse({"runs": list_runs(LAB_RUNS)}, headers={"Cache-Control": "no-store"})
+    from lab.swarm.runs_index import list_exp_runs, list_runs
+    rows = list_runs(LAB_RUNS) + list_exp_runs(_exp_root())
+    rows.sort(key=lambda r: (r.get("started_at") or "", r["run_id"]), reverse=True)
+    return JSONResponse({"runs": rows}, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/lab/runs/{problem}/{run_id}")
@@ -154,6 +156,40 @@ def lab_run(problem: str, run_id: str):
     detail = run_detail(LAB_RUNS, problem, run_id)
     if detail is None:
         raise HTTPException(404, f"no lab run {problem}/{run_id}")
+    return JSONResponse(detail, headers={"Cache-Control": "no-store"})
+
+
+EXP_RUNS: Path | None = None   # experiment matrices; None means the "exp" folder next to LAB_RUNS
+
+
+def _exp_root() -> Path:
+    return EXP_RUNS if EXP_RUNS is not None else LAB_RUNS.parent / "exp"
+
+
+@app.get("/api/exp")
+def exp_matrices():
+    """Every experiment matrix under runs/exp/: arms, seeds, runs planned / finished / running."""
+    from lab.swarm.runs_index import list_matrices
+    return JSONResponse({"matrices": list_matrices(_exp_root())}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/exp/{matrix}")
+def exp_matrix(matrix: str):
+    """One matrix: its manifest, report.json if written, and each run's status and final losses."""
+    from lab.swarm.runs_index import matrix_detail
+    detail = matrix_detail(_exp_root(), matrix)
+    if detail is None:
+        raise HTTPException(404, f"no experiment matrix {matrix}")
+    return JSONResponse(detail, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/exp/{matrix}/{arm}/{seed}")
+def exp_run(matrix: str, arm: str, seed: str):
+    """One experiment run (runs/exp/<matrix>/<arm>/seed<k>), shaped like /api/lab/runs/{problem}/{run_id}."""
+    from lab.swarm.runs_index import exp_run_detail
+    detail = exp_run_detail(_exp_root(), matrix, arm, seed)
+    if detail is None:
+        raise HTTPException(404, f"no experiment run {matrix}/{arm}/{seed}")
     return JSONResponse(detail, headers={"Cache-Control": "no-store"})
 
 
