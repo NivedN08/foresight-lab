@@ -285,6 +285,30 @@ formula scores 17.05.
 - So this gives no evidence that a lab which has worked on the coast is better at a new problem.
   With two seeds an effect smaller than about 0.5 (3% of the starting loss) could not be seen.
 
+## Live sealed forecasts on the first evening (a snapshot, in a storm)
+
+From the live ledger at 06:44 UTC on Nov 14, on forecasts that the lab's forecaster (lab-a) and
+every hand-written model all made. Mean absolute error, cm:
+
+| hours ahead | shared forecasts | issue hours | "gap continues" | damped | starting formula | lab-a |
+|---|---|---|---|---|---|---|
+| 1 | 69 | 3 | 3.21 | 3.05 | 3.03 | 3.29 |
+| 3 | 23 | 1 | 4.98 | 5.59 | 5.48 | 6.81 |
+
+- At one hour the four are not separated (lab minus best: +0.26, interval −0.15 to +0.73). At
+  three hours the lab's forecaster is worse (+1.83, interval +0.35 to +3.36), on a single issue
+  hour: 23 gauges in the same storm are not 23 independent tests, so the interval is too narrow.
+- During these hours the gauges read 55 to 90 cm above the tide table. The train window had 15 to
+  25 cm and the test window averaged 33 cm, so the forecaster is working outside the range it was
+  fitted and selected on.
+- Where it goes wrong: the changes it makes to "the current gap" did not track what happened
+  (correlation with the actual change +0.01 at one hour, −0.24 at three). Its largest misses are
+  gauges far above their recent mean that it pulled back down (one at 91 cm forecast to 80, which
+  then read 93) and gauges it pushed up that fell. That looks like its mean-reverting and
+  neighbour terms misfiring in a surge. It is a hypothesis from 23 cases, not a finding.
+- The test window says the lab's forecaster is better on an ordinary fortnight; this says it is
+  not yet better in the first storm it met. Both go in the pitch.
+
 ## The ready-made matrices
 
 All four use small budgets: 6 generations x 4 proposals, seeds 1 and 2 (the ladder has seeds 1 to 5 for three arms), a $4 cap per run, and the
