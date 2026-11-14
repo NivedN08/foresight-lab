@@ -221,7 +221,7 @@ Which forecasters got the one look was fixed in the protocol before the look: th
 of the finished coast run with the lowest confirm loss across the ladder, memory and search
 experiments (`researcher_full` seed 2, 2.362 cm), and the two forecasters issuing live sealed
 forecasts (`lab-a`, `lab-b`, from the first long run). Test window: 8,000 cases, 322 station-days,
-Oct 26 to Nov 13. Mean absolute error in cm with 95% intervals that resample station-days.
+Oct 31 to Nov 13. Mean absolute error in cm with 95% intervals that resample station-days.
 
 | forecaster | all leads | 1 h | 3 h | 6 h | 12 h | 24 h |
 |---|---|---|---|---|---|---|
