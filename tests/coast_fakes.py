@@ -106,20 +106,28 @@ class FakeClient:
     def _om(self, q, marine: bool):
         lats = q["latitude"].split(",")
         now = self.clock().replace(minute=0, second=0, microsecond=0)
-        start = (now - timedelta(days=int(q["past_days"]))).replace(hour=0)
-        times = [start + timedelta(hours=k) for k in range(int((now - start).total_seconds() // 3600) + 72)]
+        if "start_date" in q:   # previous-run requests use a date range
+            start = datetime.strptime(q["start_date"], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            stop = datetime.strptime(q["end_date"], "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(hours=23)
+            times = [start + timedelta(hours=k) for k in range(int((stop - start).total_seconds() // 3600) + 1)]
+        else:
+            start = (now - timedelta(days=int(q["past_days"]))).replace(hour=0)
+            times = [start + timedelta(hours=k) for k in range(int((now - start).total_seconds() // 3600) + 72)]
         out = []
         for _ in lats:
             hrs = [t.timestamp() / 3600 for t in times]
             if marine:
-                hourly = {"time": [t.strftime("%Y-%m-%dT%H:%M") for t in times],
-                          "wave_height": [2.0 + math.sin(h / 10) for h in hrs],
-                          "wave_period": [10.0] * len(hrs), "swell_wave_height": [1.5] * len(hrs),
-                          "swell_wave_period": [14.0] * len(hrs), "swell_wave_direction": [290.0] * len(hrs)}
+                base = {"wave_height": [2.0 + math.sin(h / 10) for h in hrs],
+                        "wave_period": [10.0] * len(hrs), "swell_wave_height": [1.5] * len(hrs),
+                        "swell_wave_period": [14.0] * len(hrs), "swell_wave_direction": [290.0] * len(hrs)}
             else:
-                hourly = {"time": [t.strftime("%Y-%m-%dT%H:%M") for t in times],
-                          "pressure_msl": [1013 + 5 * math.sin(h / 30) for h in hrs],
-                          "wind_speed_10m": [5 + 2 * math.sin(h / 7) for h in hrs],
-                          "wind_direction_10m": [(270 + 20 * math.sin(h / 11)) % 360 for h in hrs]}
+                base = {"pressure_msl": [1013 + 5 * math.sin(h / 30) for h in hrs],
+                        "wind_speed_10m": [5 + 2 * math.sin(h / 7) for h in hrs],
+                        "wind_direction_10m": [(270 + 20 * math.sin(h / 11)) % 360 for h in hrs]}
+            hourly = {"time": [t.strftime("%Y-%m-%dT%H:%M") for t in times]}
+            for name in q.get("hourly", ",".join(base)).split(","):
+                var, _, k = name.partition("_previous_day")
+                if var in base:   # an older run: the same curve, slightly off
+                    hourly[name] = [v + (0.3 * int(k) if k else 0.0) for v in base[var]]
             out.append({"hourly": hourly})
         return json.dumps(out if len(out) > 1 else out[0])

@@ -36,6 +36,11 @@ FIT_DAYS = 45
 STALE_HOURS = 6
 SERIES_STEP_MIN = 12
 MAX_STATE_BYTES = 1_900_000
+# The hourly refit learns from history built with previous-run weather (a run
+# published before each issue time), so its coefficients match forecast-quality
+# inputs; live cases use the newest forecast. See water.py.
+FIT_WEATHER = "runs"
+LIVE_WEATHER = "latest"
 
 
 def floor6(t: datetime) -> datetime:
@@ -57,8 +62,10 @@ class WaterCycle:
         self.fit_info: dict = {}
 
     def load(self, now: datetime):
+        # weather_runs: leak-free previous-run weather for the fit's history;
+        # the live cases themselves use the newest forecast ("latest").
         self.stations = load_stations(self.client, now, self.fit_days + 2, stations=self.stations_ids,
-                                      log=self.log)
+                                      log=self.log, weather_runs=True)
         start = pd.Timestamp(now) - pd.Timedelta(days=self.fit_days + 4)
         end = pd.Timestamp(now) + pd.Timedelta(days=2)
         self.feats = {sid: StationFeatures(sd, start, end) for sid, sd in self.stations.items()}
@@ -67,7 +74,8 @@ class WaterCycle:
         hour = now.replace(minute=0, second=0, microsecond=0)
         if self.models is not None and self.fitted_hour == hour:
             return
-        cases, truths = build_history_cases(self.feats, now - timedelta(days=self.fit_days), now)
+        cases, truths = build_history_cases(self.feats, now - timedelta(days=self.fit_days), now,
+                                            weather=FIT_WEATHER)
         cases_truths = [(c, t) for c, t in zip(cases, truths) if c.target_time < now]
         models = all_models()
         for m in models:
@@ -83,7 +91,7 @@ class WaterCycle:
         out = []
         for sid, f in self.feats.items():
             for lead in LEADS:
-                case = build_case(f, issue, lead)
+                case = build_case(f, issue, lead, weather=LIVE_WEATHER)
                 if case is None:
                     continue
                 target = case.target_time

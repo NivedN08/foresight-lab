@@ -199,6 +199,21 @@ def _coords(points: list[tuple[float, float]]) -> str:
     return f"latitude={lat}&longitude={lon}"
 
 
+OM_WEATHER_FALLBACK = "https://previous-runs-api.open-meteo.com/v1/forecast"
+
+
+def _get_fresh(client, url: str, ttl: float | None) -> tuple[str | None, bool, str | None]:
+    """(text, stale, error). `stale` is True when the client fell back to an old
+    cached copy (it says so in its log) instead of a fresh answer."""
+    n = len(client.log)
+    try:
+        text = client.get_text(url, ttl=ttl)
+    except Exception as e:  # noqa: BLE001 - network errors, FetchError
+        return None, False, str(e)
+    stale = any(url in m and "stale" in m for m in client.log[n:])
+    return text, stale, None
+
+
 def fetch_weather(client: Client, points: list[tuple[float, float]], past_days: int = 92,
                   ttl: float = 3600.0) -> list[pd.DataFrame] | None:
     """Hourly pressure_msl (hPa) and 10 m wind (m/s, direction from) per point.
@@ -207,14 +222,40 @@ def fetch_weather(client: Client, points: list[tuple[float, float]], past_days: 
     Values after the request time are a real forecast (what the live loop uses).
     Values before it are short-lead forecasts stitched together, close to an
     analysis: using them as "the forecast at issue time" in a backtest leaks the
-    future. For history use `fetch_weather_runs`."""
-    url = (f"{OM_WEATHER}?{_coords(points)}&hourly=pressure_msl,wind_speed_10m,wind_direction_10m"
-           f"&wind_speed_unit=ms&past_days={past_days}&forecast_days=3&timezone=GMT")
+    future. For history use `fetch_weather_runs`.
+
+    If the main host (api.open-meteo.com) fails, or only an old cached copy of
+    its answer is available, the same request goes to the Previous Runs host
+    (previous-runs-api.open-meteo.com), which also serves the un-suffixed
+    variables. Checked by hand on 2026-11-14 00:05 UTC, while the main host timed
+    out from this network: for the coming 18 hours the un-suffixed values differ
+    from `_previous_day1` (17 of 18 hours), and further ahead `_previous_day1` is
+    filled with the same values, so the un-suffixed series is the newest run; 32
+    of 47 future hours were identical to the main host's answer cached at 21:45
+    UTC and the rest differed by 0.14 hPa on average (a newer run had arrived).
+    So the fallback is the latest forecast, not hindsight, for hours ahead."""
     try:
-        return parse_open_meteo(client.get_text(url, ttl=ttl))
+        return _fetch_weather(client, points, past_days, ttl)
     except Exception as e:  # graceful degradation: models run on gauge data alone
         client.log.append(f"weather unavailable: {e}")
         return None
+
+
+def _fetch_weather(client, points, past_days, ttl):
+    query = (f"?{_coords(points)}&hourly=pressure_msl,wind_speed_10m,wind_direction_10m"
+             f"&wind_speed_unit=ms&past_days={past_days}&forecast_days=3&timezone=GMT")
+    text, stale, err = _get_fresh(client, OM_WEATHER + query, ttl)
+    if text is not None and not stale:
+        return parse_open_meteo(text)
+    alt, alt_stale, alt_err = _get_fresh(client, OM_WEATHER_FALLBACK + query, ttl)
+    if alt is not None and not alt_stale:
+        client.log.append(f"weather from the fallback host (main host: {err or 'stale cache only'})")
+        return parse_open_meteo(alt)
+    best = text if text is not None else alt     # an old copy beats nothing
+    if best is not None:
+        return parse_open_meteo(best)
+    client.log.append(f"weather unavailable: {err}; fallback: {alt_err}")
+    return None
 
 
 OM_PREVIOUS_RUNS = "https://previous-runs-api.open-meteo.com/v1/forecast"

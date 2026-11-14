@@ -508,3 +508,96 @@ def test_wave_model_runs_after_issue_cannot_change_inputs(lead):
     assert _inputs_equal(c1.inputs, W.build_wave_case(f2, issue, lead, model="runs").inputs)
     assert _inputs_equal(c1.inputs, W.build_wave_case(f2, issue, lead).inputs)
     assert W.build_wave_case(f2, issue, lead, model="hindsight").inputs["model_target"] == 77.0
+
+
+# ------------------------------------------- live fit on previous-run weather
+def _host(url):
+    from urllib.parse import urlparse
+    return urlparse(url).netloc
+
+
+def test_live_fit_builds_history_with_previous_run_weather(monkeypatch):
+    import lab.tasks.coast.live as L
+
+    clock = FakeClock(T0)
+    client = FakeClient(clock)
+    wc = L.WaterCycle(client, fit_days=6, stations=["9414290"], log=lambda *a: None)
+    wc.load(clock())
+    f = wc.feats["9414290"]
+    assert set(f.runs) == {1, 2} and f.has_weather
+    seen = {}
+    real = L.build_history_cases
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        cases, truths = real(*a, **kw)
+        seen["cases"] = cases
+        return cases, truths
+
+    monkeypatch.setattr(L, "build_history_cases", spy)
+    wc.fit(clock())
+    assert seen["weather"] == "runs" == L.FIT_WEATHER
+    # the history's weather is the previous-run series (the fake makes day k read 0.3*k hPa
+    # higher than the newest run), not the newest-run series
+    for c in seen["cases"][:200]:
+        assert c.inputs["has_weather"]
+        k = 1 if c.inputs["lead_h"] <= 18 else 2
+        newest = float(np.interp(c.issue_time.timestamp(), f.w_t, f.w_p))
+        assert c.inputs["p_issue"] == pytest.approx(newest + 0.3 * k, abs=1e-6)
+    assert "pressure" in wc.models[-1].coef[1]
+    # live cases use the newest forecast
+    out = wc.live_forecasts(clock(), set())
+    case = L.build_case(f, L.floor6(clock()), 6, weather=L.LIVE_WEATHER)
+    assert case.inputs["p_issue"] == pytest.approx(
+        float(np.interp(L.floor6(clock()).timestamp(), f.w_t, f.w_p)), abs=1e-9)
+    assert out and all(r["meta"]["has_weather"] for r in out)
+
+
+# ------------------------------------------------ weather fallback host
+class MainHostDown(FakeClient):
+    def get_text(self, url, ttl=None):
+        if _host(url) == "api.open-meteo.com":
+            raise S.FetchError("api.open-meteo.com is not answering and nothing is cached")
+        return super().get_text(url, ttl)
+
+
+class MainHostStale(FakeClient):
+    """The main host is down but an old cached copy exists: the client returns it
+    and says so in its log (as http.Client's circuit breaker does)."""
+    def get_text(self, url, ttl=None):
+        if _host(url) == "api.open-meteo.com":
+            self.log.append(f"api.open-meteo.com is not answering; stale cache used for {url}")
+            text = json.loads(super().get_text(url, ttl))
+            text["hourly"]["pressure_msl"] = [900.0] * len(text["hourly"]["pressure_msl"])
+            return json.dumps(text)
+        return super().get_text(url, ttl)
+
+
+@pytest.mark.parametrize("cls", [MainHostDown, MainHostStale])
+def test_weather_falls_back_to_previous_runs_host(cls):
+    client = cls(FakeClock(T0))
+    dfs = S.fetch_weather(client, [(37.8, -122.5)], past_days=3)
+    assert dfs is not None and len(dfs) == 1
+    assert {"pressure_msl", "wind_speed_10m", "wind_direction_10m"} <= set(dfs[0].columns)
+    assert dfs[0]["pressure_msl"].between(1000, 1030).all()           # not the stale 900s
+    assert dfs[0].index.max() >= pd.Timestamp(T0 + timedelta(hours=24))  # covers the hours ahead
+    assert any(_host(u) == "previous-runs-api.open-meteo.com" for u in client.calls)
+    assert any("fallback host" in m for m in client.log)
+
+
+def test_weather_prefers_main_host_when_it_answers():
+    client = FakeClient(FakeClock(T0))
+    assert S.fetch_weather(client, [(37.8, -122.5)], past_days=3) is not None
+    assert not any("previous-runs" in u for u in client.calls)
+
+
+def test_live_cycle_gets_weather_from_fallback_host(tmp_path):
+    from lab.tasks.coast.live import WaterCycle, cycle
+
+    clock = FakeClock(T0)
+    client = MainHostDown(clock)
+    wc = WaterCycle(client, fit_days=6, stations=["9414290"], log=lambda *a: None)
+    cycle(clock=clock, client=client, ledger_dir=tmp_path / "live", wc=wc, log=lambda *a: None)
+    assert wc.feats["9414290"].has_weather
+    recs = SealedLedger(tmp_path / "live").sealed()
+    assert recs and all(r["meta"]["has_weather"] for r in recs)

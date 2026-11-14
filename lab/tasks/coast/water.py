@@ -12,13 +12,15 @@ Weather comes from one of two sources (`build_case(..., weather=...)`):
   "runs"       the Previous Runs archive (`StationData.weather_runs`): for every
                hour of the lead window, the value from a model run that was
                already published at the issue time. Leak-free; use it for history.
-  "hindsight"  the forecast endpoint (`StationData.weather`). For a live issue
-               time (now) the hours ahead are a real forecast. For a past issue
-               time they are short-lead forecasts stitched together, close to
-               what actually happened: a backtest with them leaks the future.
+  "latest"     the forecast endpoint (`StationData.weather`): the newest run.
+               For a live issue time (now) the hours ahead are a real forecast;
+               this is what the live loop predicts with.
+  "hindsight"  the same series read for a PAST issue time: short-lead forecasts
+               stitched together, close to what actually happened. A backtest
+               with them leaks the future; kept only to show the size of that leak.
 
-The default "auto" uses "runs" when they are loaded and "hindsight" otherwise,
-which keeps the live loop (which loads no runs) exactly as it was.
+The default "auto" uses "runs" when they are loaded and the forecast endpoint
+otherwise. The live loop fits on "runs" history and predicts with "latest".
 """
 from __future__ import annotations
 
@@ -41,7 +43,7 @@ TASK = "coast_water"
 # initialisation time; we allow RUN_DELAY_H. So day k is usable for every hour
 # up to issue + 24k - RUN_DELAY_H.
 RUN_DELAY_H = 6
-WEATHER_MODES = ("auto", "runs", "hindsight", "none")
+WEATHER_MODES = ("auto", "runs", "latest", "hindsight", "none")
 
 
 def run_offset_days(lead_h: float) -> int:
