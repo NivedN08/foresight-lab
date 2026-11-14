@@ -290,3 +290,146 @@ def test_modal_app_declares_the_documented_functions():
         pytest.skip("modal not installed")
     for name in ("evaluate_candidate", "coast_cycle", "turb_cycle", "live_summary"):
         assert isinstance(getattr(M, name), M.modal.Function), name
+
+
+# ------------------------------------- promoted forecasters routed to the remote function
+def _coast_cycle_with_remote(tmp_path, monkeypatch, adapter, sources):
+    from coast_fakes import T0, FakeClient, FakeClock
+    from test_coast import _promote_files
+    from lab.tasks.coast import promote as P
+    from lab.tasks.coast.live import WaterCycle
+
+    def forbidden(*a, **k):
+        raise AssertionError("promoted code ran in the live container")
+
+    monkeypatch.setattr(P, "local_executor", forbidden)
+    pdir = tmp_path / "promoted"
+    for name, src in sources.items():
+        _promote_files(pdir, name, src)
+    clock = FakeClock(T0)
+    client = FakeClient(clock)
+    wc = WaterCycle(client, fit_days=6, stations=["9414290", "9410170"], log=lambda *a: None, promoted_dir=pdir)
+    wc.promoted.executor = MB.RemoteCandidateExecutor(adapter)
+    return clock, client, wc
+
+
+def test_live_cycle_sends_promoted_code_to_the_restricted_function(tmp_path, monkeypatch):
+    from test_coast import PROMOTED_BAD, PROMOTED_GOOD
+    from lab.core.ledger import SealedLedger
+    from lab.tasks.coast.live import cycle
+    fake = MB.LocalFakeAdapter(extra_protections=MB.REMOTE_PROTECTIONS)
+    clock, client, wc = _coast_cycle_with_remote(tmp_path, monkeypatch, fake,
+                                                 {"lab-t": PROMOTED_GOOD, "lab-bad": PROMOTED_BAD})
+    led_dir = tmp_path / "live"
+    s1 = cycle(clock=clock, client=client, ledger_dir=led_dir, wc=wc, log=lambda *a: None)
+    assert s1["ledger"]["records"] == 2 * 5 * (4 + 1) and s1["ledger"]["verify"]["ok"]
+    assert fake.calls == 2 and fake.uploads == 1          # one case upload shared by both forecasters
+    keys = {json.loads(b)["key"] for b in fake.sent if b.startswith(b'{"key"')}
+    assert len(keys) == 1 and next(iter(keys)).startswith("live/")
+    prom = {p["name"]: p["status"] for p in s1["water"]["promoted"]}
+    assert prom["lab-t"]["ok"] and prom["lab-t"]["sealed"] == 10
+    assert "modal_block_network" in prom["lab-t"]["protections"]
+    assert not prom["lab-bad"]["ok"] and "always fails" in prom["lab-bad"]["error"]
+    # same hour: no second remote run
+    clock.advance(minutes=15)
+    cycle(clock=clock, client=client, ledger_dir=led_dir, wc=wc, log=lambda *a: None)
+    assert fake.calls == 2
+    # next day: the remote forecaster's records are graded and the chain verifies
+    clock.advance(hours=25)
+    s3 = cycle(clock=clock, client=client, ledger_dir=led_dir, wc=wc, log=lambda *a: None)
+    assert fake.calls == 4 and s3["ledger"]["verify"]["ok"]
+    assert s3["water"]["scoreboard"]["Lab:lab-t"]["1"]["graded"] >= 1
+    ok, _, msg = SealedLedger(led_dir).verify()
+    assert ok, msg
+
+
+def test_remote_outage_fails_only_the_promoted_forecaster(tmp_path, monkeypatch):
+    from test_coast import PROMOTED_GOOD
+    from lab.tasks.coast.live import cycle
+
+    class Down(MB.LocalFakeAdapter):
+        def call(self, request):
+            raise ConnectionError("evaluate_candidate unreachable")
+
+    clock, client, wc = _coast_cycle_with_remote(tmp_path, monkeypatch, Down(), {"lab-t": PROMOTED_GOOD})
+    s = cycle(clock=clock, client=client, ledger_dir=tmp_path / "live", wc=wc, log=lambda *a: None)
+    assert s["ledger"]["records"] == 2 * 5 * 4 and s["ledger"]["verify"]["ok"]
+    (row,) = s["water"]["promoted"]
+    assert row["status"]["ok"] is False and row["status"]["error"].startswith("remote:")
+
+
+def test_remote_executor_lints_locally_and_checks_output():
+    from lab.sandbox import runner
+    p = SynthProblem()
+    sp = p.splits()
+    prep = runner.prepare_cases(sp.train.cases, sp.train.truths, sp.select.cases)
+    fake = MB.LocalFakeAdapter()
+    ex = MB.RemoteCandidateExecutor(fake)
+    r = ex("import os\nclass Forecaster:\n    pass\n", prep)
+    assert not r.ok and r.kind == "lint" and fake.calls == 0 and fake.uploads == 0
+    r = ex(LINEAR, prep, time_limit_s=60, memory_limit_mb=1024)
+    assert r.ok and len(r.predictions) == len(sp.select)
+    local = runner.run_prepared(LINEAR, prep)
+    assert r.predictions == local.predictions
+
+    class Short(MB.LocalFakeAdapter):
+        def call(self, request):
+            reply = super().call(request)
+            reply["predictions"] = reply["predictions"][:-1]
+            return reply
+
+    r = MB.RemoteCandidateExecutor(Short())(LINEAR, prep)
+    assert not r.ok and r.error.startswith("bad output")
+
+
+def test_volume_mount_adapter_commits_and_prunes(tmp_path):
+    from lab.sandbox import runner
+    p = SynthProblem()
+    sp = p.splits()
+
+    class Vol:
+        commits = 0
+
+        def commit(self):
+            Vol.commits += 1
+
+    class Fn:
+        def remote(self, request):
+            return MB.run_remote(request, tmp_path, MB.REMOTE_PROTECTIONS)
+
+    ad = MB.VolumeMountAdapter(tmp_path, Vol(), Fn(), keep=2)
+    ex = MB.RemoteCandidateExecutor(ad)
+    keys = []
+    for n in (20, 25, 30):      # three different hourly case sets
+        prep = runner.prepare_cases(sp.train.cases[:n], sp.train.truths[:n], sp.select.cases)
+        assert ex(MEAN, prep).ok
+        keys.append(MB.cases_key(prep, "live"))
+    assert Vol.commits == 3
+    left = sorted(x.name for x in (tmp_path / "live").iterdir())
+    assert len(left) == 2 and keys[-1].split("/")[1] in left and keys[0].split("/")[1] not in left
+
+
+def test_run_remote_rejects_malformed_keys(tmp_path):
+    for key in ("../etc", "live/../../x", "LIVE/" + "a" * 32, "a" * 31):
+        r = MB.run_remote({"key": key, "source": LINEAR, "time_limit_s": 10, "memory_limit_mb": 512}, tmp_path)
+        assert not r["ok"] and "malformed" in r["error"]
+
+
+def test_modal_coast_cycle_wires_the_remote_executor(tmp_path, monkeypatch):
+    import lab.modal_app as M
+    from lab.tasks.coast import live as L
+    seen = {}
+
+    def fake_cycle(**kw):
+        seen["wc"] = kw["wc"]
+        return {"ledger": {"records": 0, "verify": {"ok": True}}, "generated_at": "x"}
+
+    monkeypatch.setattr(L, "cycle", fake_cycle)
+    monkeypatch.setattr(L, "LIVE_DIR", tmp_path)
+    monkeypatch.setattr(L, "_wave_cycle", lambda client, log: None)
+    sentinel_executor = MB.RemoteCandidateExecutor(MB.LocalFakeAdapter())
+    M.run_coast_cycle(log=lambda *a: None, executor=sentinel_executor)
+    assert seen["wc"].promoted is not None and seen["wc"].promoted.executor is sentinel_executor
+    import inspect
+    src = inspect.getsource(M)
+    assert "RemoteCandidateExecutor(VolumeMountAdapter(LIVE_CASES_MOUNT, cases_volume, evaluate_candidate))" in src

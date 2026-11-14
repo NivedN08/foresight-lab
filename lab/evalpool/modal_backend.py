@@ -33,6 +33,8 @@ import hashlib
 import io
 import json
 import os
+import re
+import shutil
 import tempfile
 import threading
 import time
@@ -82,8 +84,14 @@ def check_modal_setup():
     return modal
 
 
-def cases_key(prepared: runner.PreparedCases) -> str:
-    return hashlib.sha256(prepared.body).hexdigest()[:32]
+def cases_key(prepared: runner.PreparedCases, prefix: str = "") -> str:
+    """Content key of encoded cases: 32 hex digits, optionally under one prefix
+    directory (the live job uses "live/")."""
+    h = hashlib.sha256(prepared.body).hexdigest()[:32]
+    return f"{prefix}/{h}" if prefix else h
+
+
+KEY_RE = re.compile(r"^(?:[a-z]+/)?[0-9a-f]{32}$")
 
 
 # ------------------------------------------------------------- container side
@@ -91,10 +99,14 @@ def run_remote(request: dict, cases_root: str | Path, extra_protections: Sequenc
     """Runs in the Modal container (or in-process for tests). Reads the encoded
     cases by key, runs the candidate through the sandbox child runner, and
     returns plain JSON-safe data. No truths of evaluation windows exist here."""
-    root = Path(cases_root) / request["key"]
+    key = str(request.get("key", ""))
+    if not KEY_RE.match(key):
+        return {"ok": False, "error": "crash: malformed cases key", "kind": "crash", "lint": [],
+                "predictions": None, "protections": list(extra_protections), "name": None}
+    root = Path(cases_root) / key
     meta = json.loads((root / "meta.json").read_text())
     body = (root / "body.bin").read_bytes()
-    if hashlib.sha256(body).hexdigest()[:32] != request["key"]:
+    if hashlib.sha256(body).hexdigest()[:32] != key.rsplit("/", 1)[-1]:
         return {"ok": False, "error": "crash: encoded cases do not match their key", "kind": "crash",
                 "lint": [], "predictions": None, "protections": list(extra_protections), "name": None}
     prepared = runner.PreparedCases(body, int(meta["n_train"]), int(meta["n_eval"]))
@@ -129,6 +141,90 @@ class ModalAdapter:
 
     def call(self, request: dict) -> dict:
         return self.fn.remote(request)
+
+
+class VolumeMountAdapter:
+    """Used INSIDE a Modal container that mounts the cases Volume (the live coast
+    cycle): cases are written to the mount and committed, and each candidate is
+    sent to the network-blocked `evaluate_candidate` function. Only the newest
+    `keep` case sets under the same prefix are kept, so hourly uploads do not pile up."""
+
+    def __init__(self, mount: str | Path, volume, function, keep: int = 2):
+        self.mount = Path(mount)
+        self.volume = volume
+        self.fn = function
+        self.keep = keep
+
+    def has_cases(self, key: str) -> bool:
+        return (self.mount / key / "body.bin").exists() and (self.mount / key / "meta.json").exists()
+
+    def upload_cases(self, key: str, body: bytes, meta: dict) -> None:
+        d = self.mount / key
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "body.bin").write_bytes(body)
+        (d / "meta.json").write_text(json.dumps({**meta, "uploaded_ns": time.time_ns()}))
+        if "/" in key:     # prune older sets under the same prefix, oldest upload first
+            def uploaded(x: Path) -> int:
+                try:
+                    return int(json.loads((x / "meta.json").read_text()).get("uploaded_ns", 0))
+                except (OSError, ValueError):
+                    return 0
+            older = sorted((x for x in d.parent.iterdir() if x.is_dir() and x != d), key=uploaded)
+            for x in older[: max(0, len(older) - (self.keep - 1))]:
+                shutil.rmtree(x, ignore_errors=True)
+        self.volume.commit()
+
+    def call(self, request: dict) -> dict:
+        return self.fn.remote(request)
+
+
+class RemoteCandidateExecutor:
+    """Runs candidate code somewhere else, with the signature of
+    `runner.run_prepared`: (source, prepared, *, time_limit_s, memory_limit_mb,
+    log_path) -> SandboxResult. The live coast cycle on Modal uses it so that
+    agent-written code never executes in the container that has the network and
+    the ledgers. The source is linted here first; a lint failure is never sent."""
+
+    def __init__(self, adapter, prefix: str = "live"):
+        self.adapter = adapter
+        self.prefix = prefix
+        self._lock = threading.Lock()
+
+    def __call__(self, source: str, prepared: runner.PreparedCases, *, time_limit_s: float = 180,
+                 memory_limit_mb: int = REMOTE_MEMORY_MB, log_path=None) -> runner.SandboxResult:
+        t0 = time.monotonic()
+        problems = lint(source)
+        if problems:
+            res = runner.SandboxResult(ok=False, predictions=None, kind="lint", lint=problems,
+                                       error=f"lint: {len(problems)} problem(s); first: {problems[0]}",
+                                       protections=["lint"], duration_s=time.monotonic() - t0)
+            runner._log_failure(log_path, source, res)
+            return res
+        key = cases_key(prepared, self.prefix)
+        try:
+            with self._lock:
+                if not self.adapter.has_cases(key):
+                    self.adapter.upload_cases(key, prepared.body, {"n_train": prepared.n_train,
+                                                                   "n_eval": prepared.n_eval})
+            reply = self.adapter.call({"key": key, "source": source, "time_limit_s": time_limit_s,
+                                       "memory_limit_mb": memory_limit_mb})
+        except Exception as e:  # noqa: BLE001 - outage: this candidate fails, the caller carries on
+            return runner.SandboxResult(ok=False, predictions=None, kind="crash",
+                                        error=f"remote: {type(e).__name__}: {e}", protections=["lint"],
+                                        duration_s=time.monotonic() - t0)
+        preds = reply.get("predictions")
+        ok = bool(reply.get("ok"))
+        err = reply.get("error")
+        if ok and (not isinstance(preds, list) or len(preds) != prepared.n_eval):
+            ok, preds, err = False, None, "bad output: remote returned the wrong number of predictions"
+        res = runner.SandboxResult(ok=ok, predictions=preds if ok else None, error=None if ok else err,
+                                   lint=list(reply.get("lint") or []),
+                                   protections=list(dict.fromkeys(["lint"] + list(reply.get("protections") or []))),
+                                   kind=None if ok else (reply.get("kind") or "crash"), name=reply.get("name"),
+                                   duration_s=time.monotonic() - t0)
+        if not ok:
+            runner._log_failure(log_path, source, res)
+        return res
 
 
 class LocalFakeAdapter:

@@ -125,26 +125,44 @@ Modal usage page after the first day.
 
 ## Isolation on Linux
 
-What protects us when a candidate runs on Modal:
+On Modal, agent-written code runs in exactly one place: the `evaluate_candidate` function. This
+covers both research-loop candidates and promoted forecasters in the live coast cycle.
 
-| layer | evaluator (`evaluate_candidate`) | live coast cycle (promoted forecasters) |
+The live coast cycle (`coast_cycle`) needs the network and holds the ledgers, so it never executes
+candidate code. Once an hour it does four things:
+1. It builds the prepared history and live cases.
+2. It writes them to the `lab-eval-cases` Volume under `live/<content hash>` and commits. Only
+   the newest two hourly sets are kept.
+3. It calls `evaluate_candidate` once per promoted forecaster.
+4. It seals the predictions that come back.
+
+A forecaster that fails, times out or cannot be reached (`remote:` error) seals nothing that
+hour, and the cycle carries on. On the laptop, `PromotedRunner` still uses the local sandbox
+(`local_executor`).
+
+What protects us when candidate code runs in `evaluate_candidate`:
+
+| layer | `evaluate_candidate` (all candidate code on Modal) | `coast_cycle` container |
 |---|---|---|
-| lint, before anything runs | yes | yes |
-| isolated interpreter, restricted builtins | yes | yes |
-| wall-clock kill, resident-memory watchdog | yes | yes |
-| rlimits (CPU, file size 0, no core dumps, address space) | yes (address space is enforced on Linux, unlike macOS) | yes |
-| macOS `sandbox-exec` (no network, no file writes, read allowlist) | **absent on Linux** | **absent on Linux** |
-| no outbound network | yes: `block_network=True` on the function; Modal drops all outbound traffic | **no**: the cycle must fetch gauges and weather |
-| no access to other Modal resources | yes: `restrict_modal_access=True` | no |
-| what the candidate's process could reach | the prepared cases on `lab-eval-cases` (truths of train only) | the whole `lab-live-data` Volume, including the ledgers |
+| lint, before anything runs | yes, in the caller (laptop or `coast_cycle`) and again in the container | runs no candidate code |
+| isolated interpreter, restricted builtins | yes | n/a |
+| wall-clock kill, resident-memory watchdog | yes | n/a |
+| rlimits (CPU, file size 0, no core dumps, address space) | yes (address space is enforced on Linux, unlike macOS) | n/a |
+| macOS `sandbox-exec` (no network, no file writes, read allowlist) | **absent on Linux** | n/a |
+| no outbound network | yes: `block_network=True` on the function; Modal drops all outbound traffic | has network (fetches gauges and weather) |
+| no access to other Modal resources | yes: `restrict_modal_access=True` | has access (calls `evaluate_candidate`) |
+| what a candidate's process could reach | only the `lab-eval-cases` Volume: prepared cases, with truths of the train or live-history window only | n/a: the ledgers and caches are on `lab-live-data`, which `evaluate_candidate` does not mount |
 | Modal container isolation | the Sandbox docs name gVisor or a VM as the runtime; I did not find the same statement for Functions | same |
 
-The live coast cycle is the weak spot. A promoted forecaster that got past both the lint and the
-restricted builtins would have network access and could read the ledgers. It could not write
-bytes to a file (file-size rlimit 0), but it could rename or delete files on the Volume. The fix is
-small and not yet made: let `PromotedRunner` (in `lab/tasks/coast/promote.py`) send its candidates
-to `evaluate_candidate`, which is network-blocked and has no ledger mounted, instead of running
-them in the cycle's own container. Until then only promote candidates a person has read.
+What is still open:
+- On Linux there is no file-read allowlist inside the container. A candidate that got past both
+  the lint and the restricted builtins could read the other prepared case sets on
+  `lab-eval-cases`, which hold train truths. Those truths are not secret: they are given to every
+  candidate's `fit`.
+- Such a candidate could also rename or delete files on that Volume. The file-size rlimit stops it
+  writing bytes. Mounting the Volume read-only would close this, but `Volume.read_only()` is not
+  in the public docs, so it is not used.
+- It could not reach the network, the ledgers, or other Modal resources.
 
 ## Doc pages relied on (read 2026-11-14)
 
@@ -176,6 +194,9 @@ them in the cycle's own container. Until then only promote candidates a person h
 - The sandbox child runner on Linux, in particular the address-space rlimit at 2048 MB with numpy
   and a 91 MB payload. Docker was not running on this Mac, so I could not try it in a Linux
   container either.
+- Calling `evaluate_candidate.remote(...)` from inside `coast_cycle`, and the hand-over through
+  the mounted `lab-eval-cases` Volume (write, `commit()`, then the other function reads it).
+  This is tested only with in-process fakes.
 - Whether `block_network=True` and `restrict_modal_access=True` still allow `Volume.reload()`
   inside `evaluate_candidate`. It is only needed when a warm container started before new cases
   were uploaded; if it fails, the evaluation returns a `remote:` error that is not cached.

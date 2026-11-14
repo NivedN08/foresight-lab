@@ -163,11 +163,18 @@ def floor6(t: datetime) -> datetime:
     return t - timedelta(minutes=t.minute % 6)
 
 
+def local_executor(source, prepared, *, time_limit_s, memory_limit_mb, log_path=None):
+    """Run candidate code in this machine's sandbox child process (the laptop path)."""
+    return sandbox.run_prepared(source, prepared, time_limit_s=time_limit_s,
+                                memory_limit_mb=memory_limit_mb, log_path=log_path)
+
+
 class PromotedRunner:
     """Runs the promoted forecasters inside the live cycle, at most once an hour."""
 
     def __init__(self, client, directory: Path = PROMOTED_DIR, fit_days: int = 45, n_history: int = N_HISTORY,
-                 time_limit_s: float = 180, memory_limit_mb: int = 1536, log=print, log_path=None):
+                 time_limit_s: float = 180, memory_limit_mb: int = 1536, log=print, log_path=None,
+                 executor=None):
         self.client = client
         self.directory = Path(directory)
         self.fit_days = fit_days
@@ -176,6 +183,10 @@ class PromotedRunner:
         self.memory_limit_mb = memory_limit_mb
         self.log = log
         self.log_path = log_path
+        # Where candidate code runs: None = this machine's sandbox (`local_executor`).
+        # On Modal the live cycle sets a RemoteCandidateExecutor, so promoted code only
+        # runs in the network-blocked evaluate_candidate function (lab/modal_app.py).
+        self.executor = executor
         self.ran_hour: datetime | None = None
         self.status: dict[str, dict] = {}
         self.promoted: list[Promoted] = []
@@ -242,9 +253,11 @@ class PromotedRunner:
         out = []
         for p in self.promoted:
             t3 = time.time()
+            res = None
             try:
-                res = sandbox.run_prepared(p.source, prepared, time_limit_s=self.time_limit_s,
-                                           memory_limit_mb=self.memory_limit_mb, log_path=self.log_path)
+                run = self.executor or local_executor
+                res = run(p.source, prepared, time_limit_s=self.time_limit_s,
+                          memory_limit_mb=self.memory_limit_mb, log_path=self.log_path)
                 err = res.error if not res.ok else None
                 preds = res.predictions if res.ok else None
                 if preds is not None:
@@ -255,7 +268,8 @@ class PromotedRunner:
                 err, preds = f"{type(e).__name__}: {e}", None
             dt = round(time.time() - t3, 2)
             self.timing["runs_s"][p.name] = dt
-            st = {"last_run": to_iso(now), "seconds": dt, "ok": err is None, "error": err, "sealed": 0}
+            st = {"last_run": to_iso(now), "seconds": dt, "ok": err is None, "error": err, "sealed": 0,
+                  "protections": list(getattr(res, "protections", None) or [])}
             if err is not None:
                 self.log(f"  promoted {p.model} failed: {err.splitlines()[0][:300]}")
                 self.status[p.name] = st

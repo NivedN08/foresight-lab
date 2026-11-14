@@ -54,6 +54,8 @@ printed), plus `kind` (`lint|timeout|memory|crash|bad_output`, `None` on success
 | `sandbox_exec_no_network` | `sandbox-exec` profile denies all network | active | not available |
 | `sandbox_exec_no_file_write` | profile denies file creation and writes (only `/dev/null`) | active | not available |
 | `sandbox_exec_read_allowlist` | profile allows reading only the Python installation, the numpy package, the temp input dir, `/usr/lib`, `/System`, the dyld cache, `/dev/urandom`, `/dev/random`, `/dev/null` and `/` itself | active | not available |
+| `modal_block_network` | Linux on Modal only (`evaluate_candidate` in `lab/modal_app.py`): the function is created with `block_network=True`, so Modal drops all outbound traffic from the container; this replaces `sandbox_exec_no_network` there | not applicable | listed when run on Modal (untested until an account exists) |
+| `modal_restrict_modal_access` | Linux on Modal only: the function is created with `restrict_modal_access=True`, so the container cannot reach other Modal resources (the ledgers' Volume is not mounted at all). There is no file-read allowlist or file-write block beyond `rlimit_fsize`; see docs/modal.md | not applicable | listed when run on Modal (untested) |
 
 Which `rlimit_*` and `sandbox_exec_*` entries appear is decided by a probe run once per
 process (`runner._probe`): it tries the rlimits in a throwaway child and checks that Python

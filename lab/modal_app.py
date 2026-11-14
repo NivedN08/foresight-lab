@@ -26,9 +26,10 @@ one ledger never has two writers on Modal; the laptop loops must be stopped
 before the schedule is turned on. A file /data/control/paused stops both cycles.
 
 The live functions need the network (gauges, weather, pilot reports), so they
-are NOT network-blocked. Promoted lab forecasters run inside the coast cycle
-through the same sandbox child runner as on the laptop, minus the macOS
-sandbox-exec layer: see docs/modal.md, "Isolation on Linux".
+are NOT network-blocked. Promoted lab forecasters therefore never run in them:
+coast_cycle writes the prepared history and live cases to the cases Volume and
+calls evaluate_candidate (network blocked, no access to other Modal resources,
+no ledgers mounted), which returns predictions. See docs/modal.md, "Isolation on Linux".
 """
 from __future__ import annotations
 
@@ -53,6 +54,7 @@ TASK_DIRS = {"coast": "runs/coast/live", "turb": "runs/turb/live"}
 SEED_DIRS = ["runs/coast/live", "runs/turb/live", "runs/lab/promoted", "cache/coast", "cache/turb"]
 PAUSE_FILE = "control/paused"
 PROMOTED_MARKER = "promoted_ran_hour.txt"
+LIVE_CASES_MOUNT = "/cases"     # the eval cases Volume, mounted in coast_cycle to hand over cases
 SCHEDULED = os.environ.get("LAB_SCHEDULE") == "1"
 
 
@@ -87,15 +89,22 @@ def paused(data: str | Path = DATA) -> bool:
     return (Path(data) / PAUSE_FILE).exists()
 
 
-def run_coast_cycle(log=print) -> dict:
+def run_coast_cycle(log=print, executor=None) -> dict:
     """Exactly one coast live cycle with promoted forecasters, like `live once`.
-    The promoted forecasters' last run hour is kept in a small file next to the
-    ledger, so a fresh container does not refit them more than once an hour."""
+
+    `executor` decides where promoted (agent-written) code runs. On Modal it is a
+    RemoteCandidateExecutor that sends the prepared history and live cases to the
+    network-blocked `evaluate_candidate` function and gets predictions back, so
+    that code never runs in this container (which has the network and the
+    ledgers). The promoted forecasters' last run hour is kept in a small file next
+    to the ledger, so a fresh container does not refit them more than once an hour."""
     from lab.tasks.coast import live as L
     from lab.tasks.coast.http import Client
     from lab.tasks.coast.promote import PROMOTED_DIR
     client = Client()
     wc = L.WaterCycle(client, promoted_dir=PROMOTED_DIR, log=log)
+    if wc.promoted is not None and executor is not None:
+        wc.promoted.executor = executor
     marker = L.LIVE_DIR / PROMOTED_MARKER
     if wc.promoted is not None and marker.exists():
         try:
@@ -160,15 +169,18 @@ if modal is not None:
                         "kind": "crash", "lint": [], "predictions": None, "protections": [], "name": None}
         return run_remote(request, CASES_MOUNT, REMOTE_PROTECTIONS)
 
-    @app.function(image=live_image, volumes={DATA: data_volume}, max_containers=1, timeout=1200,
-                  cpu=2.0, memory=4096,
+    @app.function(image=live_image, volumes={DATA: data_volume, LIVE_CASES_MOUNT: cases_volume},
+                  max_containers=1, timeout=1200, cpu=2.0, memory=4096,
                   schedule=modal.Cron("*/15 * * * *") if SCHEDULED else None)
     def coast_cycle() -> dict:
+        from lab.evalpool.modal_backend import RemoteCandidateExecutor, VolumeMountAdapter
         if paused():
             return {"paused": True}
         link_data_dirs()
+        # promoted forecasters run only in evaluate_candidate (network blocked, no ledgers)
+        remote = RemoteCandidateExecutor(VolumeMountAdapter(LIVE_CASES_MOUNT, cases_volume, evaluate_candidate))
         try:
-            return run_coast_cycle()
+            return run_coast_cycle(executor=remote)
         finally:
             data_volume.commit()
 
