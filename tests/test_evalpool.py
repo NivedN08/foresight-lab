@@ -207,7 +207,11 @@ def test_final_test_writes_hashes_and_refuses_a_repeat(tmp_path):
     rec = final_test.run(p, [str(cand)], out_dir=out, log=lines.append)
     saved = json.loads((out / rec["path"].split("/")[-1]).read_text())
     assert saved["candidates"][0]["sha256"] == E.source_hash(LINEAR)
-    assert set(saved["baselines"]) == {"zero", "mean"}
+    assert set(saved["baselines"]) == {"zero", "mean", "starting_formula"}
+    assert saved["scores"]["baseline:starting_formula"]["ok"]
+    # the starting formula is scored and compared with, but is never the "best baseline"
+    assert saved["paired_vs_starting_formula"][str(cand)]["vs"] == "baseline:starting_formula"
+    assert saved["paired_vs_starting_formula"][str(cand)]["diff"] == 0      # here the candidate IS the starting formula
     assert "lab/evalpool/evaluate.py" in saved["evaluator_sha256"]
     assert "lab/sandbox/_child.py" in saved["evaluator_sha256"]
     assert any(k.endswith("test_evalpool.py") for k in saved["problem_sha256"])

@@ -4,7 +4,9 @@
         --candidate path/to/a.py [--candidate path/to/b.py ...] [--again]
 
 Each candidate is fitted on train and scored on the test window together with
-every baseline. Printed: mean loss overall and by lead with 95% intervals from
+every baseline and the problem's starting formula (listed as
+`baseline:starting_formula`, but never chosen as the "best baseline": it is the
+lab's own starting point, and each candidate is also compared with it). Printed: mean loss overall and by lead with 95% intervals from
 a block bootstrap (blocks = the window's station-days), and the paired block
 bootstrap of each candidate against the best baseline.
 
@@ -34,6 +36,9 @@ OUT_DIR = ROOT / "runs" / "lab" / "final_test"
 EVALUATOR_FILES = ["lab/evalpool/evaluate.py", "lab/sandbox/runner.py", "lab/sandbox/_child.py",
                    "lab/sandbox/lint.py", "lab/core/stats.py", "lab/core/problem.py",
                    "lab/experiments/final_test.py"]
+
+
+START = "starting_formula"
 
 
 class AlreadyScored(SystemExit):
@@ -104,8 +109,11 @@ def run(problem, candidates: list[str], *, again: bool = False, out_dir: Path | 
                             f"(pass --again to look again; it will be counted)")
 
     splits = problem.splits()
-    names = list(sources) + [f"baseline:{n}" for n in problem.baseline_sources()]
-    all_sources = {**sources, **{f"baseline:{n}": s for n, s in problem.baseline_sources().items()}}
+    baselines = dict(problem.baseline_sources())
+    if hasattr(problem, "seed_source") and START not in baselines:
+        baselines[START] = problem.seed_source()        # the first real look left this out
+    names = list(sources) + [f"baseline:{n}" for n in baselines]
+    all_sources = {**sources, **{f"baseline:{n}": s for n, s in baselines.items()}}
     results, scores = {}, {}
     for n in names:
         r = evaluate(problem, all_sources[n], splits, ("test",), allow_test=True, time_limit_s=time_limit_s)
@@ -116,15 +124,20 @@ def run(problem, candidates: list[str], *, again: bool = False, out_dir: Path | 
             continue
         scores[n] = {"ok": True, "duration_s": r.duration_s, **score_one(problem, splits, r)}
 
-    base_ok = [n for n in names if n.startswith("baseline:") and scores[n]["ok"]]
+    start = f"baseline:{START}"
+    base_ok = [n for n in names if n.startswith("baseline:") and n != start and scores[n]["ok"]]
     best = min(base_ok, key=lambda n: scores[n]["overall"]["mean"]) if base_ok else None
-    paired = {}
+
+    def pair(p, other):
+        pr = paired_block_bootstrap(results[p].losses["test"], results[other].losses["test"], splits.test.blocks)
+        return {"vs": other, "diff": pr.diff.mean, "low": pr.diff.low, "high": pr.diff.high,
+                "p_candidate_better": pr.p_a_better, "blocks": pr.diff.n, "n": pr.n}
+    paired, paired_start = {}, {}
     for p in sources:
         if best and scores[p]["ok"]:
-            pr = paired_block_bootstrap(results[p].losses["test"], results[best].losses["test"],
-                                        splits.test.blocks)
-            paired[p] = {"vs": best, "diff": pr.diff.mean, "low": pr.diff.low, "high": pr.diff.high,
-                         "p_candidate_better": pr.p_a_better, "blocks": pr.diff.n, "n": pr.n}
+            paired[p] = pair(p, best)
+        if start in scores and scores[start]["ok"] and scores[p]["ok"]:
+            paired_start[p] = pair(p, start)
 
     # ---- print
     leads = sorted({h for n in names if scores[n]["ok"] for h in scores[n]["by_lead"]}, key=float)
@@ -139,7 +152,7 @@ def run(problem, candidates: list[str], *, again: bool = False, out_dir: Path | 
         cell = lambda d: f"{d['mean']:>8.2f} [{d['low']:5.2f},{d['high']:5.2f}]"  # noqa: E731
         log(f"{n:<34}{cell(s['overall'])}" + "".join(cell(s["by_lead"][h]) if h in s["by_lead"] else " " * 22
                                                       for h in leads))
-    for p, d in paired.items():
+    for p, d in list(paired.items()) + list(paired_start.items()):
         verdict = "better" if d["high"] < 0 else ("worse" if d["low"] > 0 else "no clear difference")
         log(f"\n{p} minus {d['vs']}: {d['diff']:+.3f} [{d['low']:+.3f}, {d['high']:+.3f}]  "
             f"P(candidate better) = {d['p_candidate_better']:.3f}  ({verdict}, {d['blocks']} blocks)")
@@ -155,7 +168,7 @@ def run(problem, candidates: list[str], *, again: bool = False, out_dir: Path | 
     record = {
         "time": stamp, "problem": problem.name, "again": again, "previous_looks": looks,
         "candidates": [{"path": p, "sha256": hashes[p]} for p in sources],
-        "baselines": {n: source_hash(s) for n, s in problem.baseline_sources().items()},
+        "baselines": {n: source_hash(s) for n, s in baselines.items()},
         "evaluator_sha256": file_hashes(EVALUATOR_FILES),
         "problem_sha256": file_hashes(problem_files(problem)),
         "splits_key": problem.cache_key() if hasattr(problem, "cache_key") else None,
@@ -163,6 +176,7 @@ def run(problem, candidates: list[str], *, again: bool = False, out_dir: Path | 
                         "from": min(c.issue_time for c in splits.test.cases).isoformat() if splits.test.cases else None,
                         "to": max(c.target_time for c in splits.test.cases).isoformat() if splits.test.cases else None},
         "loss": problem.loss_name, "best_baseline": best, "scores": scores, "paired_vs_best_baseline": paired,
+        "paired_vs_starting_formula": paired_start,
     }
     path.write_text(json.dumps(record, indent=1, default=str))
     with open(log_path, "a", encoding="utf-8") as f:

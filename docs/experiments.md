@@ -108,31 +108,43 @@ became a ladder that adds one asset at a time. The old result directories (`runs
 
 ## What the ladder showed
 
-`runs/exp/claim1_ladder_coast` (6 generations x 4 proposals, seeds 1 and 2, all 14 runs finished).
+`runs/exp/claim1_ladder_coast` (6 generations x 4 proposals; all 23 runs finished). It first ran
+with seeds 1 and 2 for every arm. Two seeds proved too noisy to rank the arms (see the memory
+experiment below), so seeds 3 to 5 were added for the three arms without search.
 Confirm loss of the final forecaster, cm; the starting formula scores 3.239.
 
-| arm | seed 1 | seed 2 | $ per run | minutes per run |
-|---|---|---|---|---|
-| random_mutation | 3.239 | 3.239 | 0 | 3.2 |
-| pipeline (the first design) | 3.129 | 3.043 | 2.29 | 11.3 |
-| single_agent | 2.679 | 2.693 | 0.98 | 4.0 |
-| researcher_plain | 2.713 | 2.820 | 1.10 | 3.3 |
-| researcher_memory | 2.636 | 3.116 | 1.36 | 3.3 |
-| researcher_search (search failed, see below) | 2.382 | 2.825 | 1.23 | 26.9 |
-| researcher_full (search failed, see below) | 2.362 | 2.710 | 1.74 | 23.6 |
+| arm | seed 1 | seed 2 | seed 3 | seed 4 | seed 5 | mean | $ per run |
+|---|---|---|---|---|---|---|---|
+| random_mutation | 3.239 | 3.239 | | | | 3.239 | 0 |
+| pipeline (the first design) | 3.129 | 3.043 | | | | 3.086 | 2.29 |
+| single_agent | 2.679 | 2.693 | 2.729 | 2.979 | 3.006 | 2.817 | 0.87 |
+| researcher_plain | 2.820 | 2.713 | 2.968 | 3.028 | 2.902 | 2.886 | 1.13 |
+| researcher_memory | 3.116 | 2.636 | 2.658 | 2.806 | 2.426 | 2.729 | 1.32 |
+| researcher_search (search failed, see below) | 2.825 | 2.382 | | | | 2.603 | 1.23 |
+| researcher_full (search failed, see below) | 2.710 | 2.362 | | | | 2.536 | 1.74 |
+
+Paired by seed over five seeds (`lab.experiments.report claim1_ladder_coast --compare A,B`):
+
+| comparison | lower loss in | mean difference | two-sided sign test |
+|---|---|---|---|
+| single_agent vs researcher_plain | single agent in 4 of 5 | 0.07 cm | p = 0.375 |
+| researcher_memory vs researcher_plain | notebook in 4 of 5 | 0.16 cm | p = 0.375 |
+| researcher_memory vs single_agent | notebook in 4 of 5 | 0.09 cm | p = 0.375 |
+
+None of the three is separated from the others. At equal dollars the notebook's edge over the
+single agent disappears (2 of 5 seeds).
 
 What this supports, and what it does not:
 
 - Random code changes never passed the decision rule (0 of 48). Every arm with one strong model
-  call per proposal ended between 2.36 and 3.12 cm, below the starting formula in all eight runs.
+  call per proposal ended between 2.36 and 3.12 cm, below the starting formula in all 19 runs.
 - The first design, `pipeline`, was again the worst arm that uses a model, at twice the cost.
 - **The two search arms did not test search.** OpenAlex refused all 72 calls (its keyless daily
   allowance was used up) and arXiv answered 21 of 72. No scouted idea was offered in
   `researcher_search`; in `researcher_full` 23 were offered, 4 were used and none passed. Those
   arms are in effect two more runs each of `researcher_plain` and `researcher_memory`.
-- Read that way, the same setup gives 2.38 to 2.82 cm without the notebook and 2.36 to 3.12 cm
-  with it. The spread between seeds (up to 0.5 cm) is larger than any difference between arms.
-  With two seeds the ladder cannot rank single agent, researcher, or researcher with notebook.
+- The spread between seeds (up to 0.7 cm within one arm) is larger than any difference between
+  arms. Five seeds do not rank single agent, researcher, or researcher with notebook.
 - Ideas the researcher marked as coming from the notebook passed the rule more often than its
   own (19 of 27 against 22 of 65 in the two notebook arms), but fewer of them were adopted per
   pass (6 of 19 against 11 of 22). The 27 notebook-sourced proposals drew on only 12 distinct
@@ -176,9 +188,9 @@ copies differ:
 Repeating one arm with one seed moves the final loss by 0.1 to 0.4 cm. Differences between arms
 in the ladder and in this experiment are the same size or smaller. Pooling every finished
 researcher run so far, counting the two ladder arms whose search failed as runs without search:
-no notebook 2.806 cm (6 runs), vector notebook 2.805 cm (6 runs). On this problem and budget the notebook has shown no effect. The single agent was
-2.68 to 2.70 cm in all four of its runs. The ladder was extended to five seeds for the three
-arms without search so that this can be tested rather than eyeballed.
+no notebook 2.806 cm (6 runs), vector notebook 2.805 cm (6 runs). The ladder was then extended to five seeds for the three arms without search so that
+this could be tested rather than eyeballed; the result is in the ladder section above: the
+notebook arm is lowest on average (2.73 against 2.82 and 2.89 cm) but not separated.
 
 ## What the search experiment showed
 
@@ -202,6 +214,38 @@ search worked: 71 searches, none failed. Confirm loss of the final forecaster, c
   own residual, was not on the closed-book list; it was not adopted.
 - So with keyless scholarly search, on this problem and budget, search found nothing useful that
   the model did not already know. The Exa arm is the open question and needs a key.
+
+## The test window, scored once
+
+Which forecasters got the one look was fixed in the protocol before the look: the final forecaster
+of the finished coast run with the lowest confirm loss across the ladder, memory and search
+experiments (`researcher_full` seed 2, 2.362 cm), and the two forecasters issuing live sealed
+forecasts (`lab-a`, `lab-b`, from the first long run). Test window: 8,000 cases, 322 station-days,
+Oct 26 to Nov 13. Mean absolute error in cm with 95% intervals that resample station-days.
+
+| forecaster | all leads | 1 h | 3 h | 6 h | 12 h | 24 h |
+|---|---|---|---|---|---|---|
+| official tide table | 32.66 [31.39, 33.86] | 32.86 | 32.50 | 32.89 | 32.38 | 32.65 |
+| "the current gap continues" | 4.54 [4.29, 4.80] | 2.09 | 4.03 | 5.35 | 5.62 | 5.77 |
+| damped version | 4.45 [4.16, 4.76] | 2.10 | 4.07 | 5.12 | 5.41 | 5.71 |
+| hand-written starting formula | 3.92 [3.71, 4.13] | 2.11 | 3.96 | 4.65 | 4.71 | 4.23 |
+| live forecaster lab-a | 3.42 [3.21, 3.62] | 1.81 | 3.40 | 4.08 | 3.76 | 4.12 |
+| live forecaster lab-b | 3.44 [3.22, 3.64] | 1.81 | 3.40 | 4.17 | 3.76 | 4.12 |
+| lab, best run by confirm loss | 3.17 [2.97, 3.39] | 1.71 | 2.78 | 3.53 | 3.84 | 4.12 |
+
+- Paired with the best simple rule (damped) on the same cases: the lab's best forecaster is
+  1.28 cm lower [1.06, 1.50]; lab-a 1.03 lower [0.84, 1.24]; lab-b 1.02 lower [0.82, 1.23]; the
+  starting formula 0.54 lower [0.38, 0.71].
+- Against the starting formula the lab's best forecaster is 0.75 cm (19%) lower and the intervals
+  do not overlap. No paired interval exists for that comparison: see the next point.
+- Two looks, not one. The scorer's first look left the starting formula out of its baselines, so
+  it was scored in a second logged look three minutes later (`runs/lab/final_test/log.jsonl`).
+  It is a reference, not a selected forecaster, and nothing was chosen after seeing it. The
+  scorer now always includes it and reports the paired difference.
+- The gain is at 1 to 12 hours. At 24 hours the lab's forecasters and the starting formula are
+  within each other's intervals (4.12 against 4.23 cm).
+- The live forecasters lab-a and lab-b give the same error at four of five leads: the eight
+  generations between them changed little outside the window they were selected on.
 
 ## The ready-made matrices
 
