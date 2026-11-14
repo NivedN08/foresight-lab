@@ -143,6 +143,43 @@ What this supports, and what it does not:
 The search failure was fixed before the search experiment ran: Crossref was added as a keyless
 source, requests are spaced, and a used-up daily allowance is no longer retried (`docs/swarm.md`).
 
+## What the memory experiment showed
+
+`runs/exp/claim4_memory_coast` (researcher mode, search off, seeds 1 and 2; the past.dev arm was
+skipped because no key is set). Confirm loss of the final forecaster, cm:
+
+| arm | seed 1 | seed 2 | $ per run | recall time per call |
+|---|---|---|---|---|
+| memory_none | 3.069 | 3.026 | 1.08 | n/a |
+| memory_full_context | 3.047 | 2.819 | 1.36 | under 0.1 ms |
+| memory_vector | 2.996 | 3.012 | 1.31 | 1.4 ms |
+
+- Both notebook arms ended lower than no notebook on both seeds, by 0.02 to 0.21 cm. That is
+  inside the noise measured below, so it is not a result.
+- All six runs reached the target (5% below the starting formula). The notebook did not make
+  that faster: 12 to 20 proposals with or without it.
+- The notebook costs about 25% more per run, because the prompt is longer.
+
+### How much one run moves by chance
+
+`memory_none` here and `researcher_plain` in the ladder are the same arm with the same seeds, run
+twice. So are `memory_vector` and `researcher_memory`. The model is not deterministic, so the two
+copies differ:
+
+| setup | seed | first run | second run |
+|---|---|---|---|
+| researcher, no notebook | 1 | 2.820 | 3.069 |
+| researcher, no notebook | 2 | 2.713 | 3.026 |
+| researcher, vector notebook | 1 | 3.116 | 2.996 |
+| researcher, vector notebook | 2 | 2.636 | 3.012 |
+
+Repeating one arm with one seed moves the final loss by 0.1 to 0.4 cm. Differences between arms
+in the ladder and in this experiment are the same size or smaller. Pooling every finished
+researcher run so far, counting the two ladder arms whose search failed as runs without search:
+no notebook 2.806 cm (6 runs), vector notebook 2.805 cm (6 runs). On this problem and budget the notebook has shown no effect. The single agent was
+2.68 to 2.70 cm in all four of its runs. The ladder was extended to five seeds for the three
+arms without search so that this can be tested rather than eyeballed.
+
 ## The ready-made matrices
 
 All four use small budgets: 6 generations x 4 proposals, seeds 1 and 2, a $4 cap per run, and the
