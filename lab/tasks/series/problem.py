@@ -35,7 +35,7 @@ from .data import Grid, build_grid, data_summary, fmt_step, read_table
 
 ROOT = Path(__file__).resolve().parents[3]
 PROBLEM_CACHE = ROOT / "cache" / "series" / "problem"
-BUILD_VERSION = 1           # bump when the case layout changes; old caches are then ignored
+BUILD_VERSION = 2           # bump when the case layout changes; old caches are then ignored
 FRACTIONS = (0.60, 0.15, 0.10, 0.15)   # train, select, confirm, test (of the time span)
 WINDOWS = ("train", "select", "confirm", "test")
 DEFAULT_MAX_CASES = {"train": 10000, "select": 5000, "confirm": 5000, "test": 5000}
@@ -228,7 +228,7 @@ class SeriesProblem:
         return build_grid(df, time_col=self.time_col, value_col=self.value_col, id_cols=self.id_cols,
                           covariate_cols=self.covariate_cols, known_future_cols=self.known_future_cols,
                           step=step if step is not None else (pd.Timedelta(self.freq) if self.freq else None),
-                          origin=origin, max_fill_steps=self.max_fill_steps, log_target=self.log_target,
+                          origin=origin, log_target=self.log_target,
                           notes=notes)
 
     def grid(self) -> Grid:
@@ -331,7 +331,7 @@ class SeriesProblem:
             for k in picked_by_window[name]:
                 s, i, lead = int(S[k]), int(I[k]), int(L[k])
                 c = build_case(g, s, i, lead, self.peers[s], self.history, self.covariate_cols,
-                               self.known_future_cols)
+                               self.known_future_cols, self.max_fill_steps)
                 if c is None:      # cannot happen after issue_mask, kept as a guard
                     continue
                 cases.append(c)
@@ -379,7 +379,7 @@ class SeriesProblem:
             row = []
             for lead in self.leads():
                 c = build_case(g, s, end, lead, peers[s], self.history, self.covariate_cols,
-                               self.known_future_cols)
+                               self.known_future_cols, self.max_fill_steps)
                 if c is not None:
                     row.append(c)
             if row:
@@ -403,7 +403,8 @@ class SeriesProblem:
         cases, truths = [], []
         for k in picked:
             s, i, lead = int(S[k]), int(I[k]), int(L[k])
-            c = build_case(g, s, i, lead, peers[s], self.history, self.covariate_cols, self.known_future_cols)
+            c = build_case(g, s, i, lead, peers[s], self.history, self.covariate_cols, self.known_future_cols,
+                           self.max_fill_steps)
             if c is not None:
                 cases.append(c)
                 truths.append({"y": float(g.y[s, i + lead])})
@@ -567,6 +568,8 @@ def render_description(problem: SeriesProblem, sp: Splits, table: dict) -> str:
         "rmse": f"Squared error `(prediction - truth)^2` of {yname}; the window mean is the MSE (RMSE is its root).",
     }[problem.loss]
     peer_rule = problem.peer_rule or "series with the same first id"
+    fill_text = (f"; a missing value is carried forward from the last real observation at or before it, "
+                 f"at most {problem.max_fill_steps} steps" if problem.max_fill_steps else "; NaN where missing")
     desc = textwrap.dedent(f"""\
     # {problem.name}: {problem.title}
 
@@ -595,7 +598,7 @@ def render_description(problem: SeriesProblem, sp: Splits, table: dict) -> str:
     window is a fixed random subsample (at most {problem.sizes['train']} / {problem.sizes['select']} /
     {problem.sizes['confirm']} / {problem.sizes['test']} cases), stratified by series and lead. Issue
     times are every grid step at which the series has a value within the last {problem.history} steps;
-    the truth must exist at the target.
+    the truth must be a real observation at the target (never a filled value).
 
     ## Inputs: `case.inputs`
     `case.issue_time`, `case.target_time` (timezone-aware UTC datetimes), `case.lead_hours` (float) and
@@ -610,12 +613,14 @@ def render_description(problem: SeriesProblem, sp: Splits, table: dict) -> str:
     | `lead_h` | int, hours | the lead in whole hours (`lead * step_hours`, rounded); score tables are keyed by it |
     | `lead_hours` | float, hours | the lead in hours |
     | `step_hours` | float | the grid step in hours ({g.step_hours:g}) |
-    | `y_hist` | ({problem.history},) | {yname} at the issue time and the {problem.history - 1} steps before it |
-    | `y_last` | float | the newest non-missing value in `y_hist` |
+    | `y_hist` | ({problem.history},) | {yname} at the issue time and the {problem.history - 1} steps before it{fill_text} |
+    | `y_hist_fill_steps` | ({problem.history},) | per `y_hist` value: 0 = really observed at that step, k = carried forward k steps from the last real observation, NaN = missing |
+    | `y_last` | float | the newest real (not carried) observation in the history |
     | `y_last_age_steps` | int | its position in `y_hist` (0 when the value at the issue time exists) |
     | `t_hist_hours` | ({problem.history},) | age of each `y_hist` value in hours (`k * step_hours`) |
     | `target_hour`, `target_dow`, `target_dom`, `target_month` | int | UTC calendar of the target time: hour 0-23, day of week 0 = Monday, day of month, month 1-12 |
-    | `cov_hist` | dict name -> ({problem.history},) | history of each covariate column ({covs}), same layout as `y_hist`, never later than the issue time |
+    | `cov_hist` | dict name -> ({problem.history},) | history of each covariate column ({covs}), same layout and filling as `y_hist`, never later than the issue time |
+    | `cov_fill_steps` | dict name -> ({problem.history},) | like `y_hist_fill_steps`, for each covariate |
     | `known_future` | dict name -> float | value of each known-in-advance column ({known}) at the target time |
     | `peers` | list of up to {MAX_PEERS} dicts | other series: {peer_rule}. Each has `series_id`, `y_last` (newest value at or before the issue time, within the history), `y_last_age_steps`, and `y_hist7` (({PEER_HIST},), newest first) |
 

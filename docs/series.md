@@ -35,7 +35,7 @@ so it assumes only this: one timestamp column, one value column, and optionally 
    | `known_future_cols` | `[]` | columns genuinely fixed in advance (see the leak rules); their value **at the target** goes into each case |
    | `loss` | `"mae"` | `"mae"` absolute error, `"mape"` absolute % error (true value 0 is not scored), `"rmse"` squared error |
    | `log_target` | `false` | forecast the natural log of the value (values <= 0 become missing) |
-   | `max_fill_steps` | `0` | forward-fill at most this many steps inside a gap; longer gaps stay missing |
+   | `max_fill_steps` | `0` | in each case's history (series and covariates), carry the last real observation forward at most this many steps; truths are never filled |
    | `max_cases` | `null` | cases per window: `null` = 10,000 train / 5,000 select / 5,000 confirm / 5,000 test; a number caps every window; a dict sets each |
    | `seed`, `name`, `title`, `cache_dir` | | subsample seed; problem name (also names the cache files); one-line title; where splits are cached (`cache/series/problem/`) |
 
@@ -68,8 +68,11 @@ so it assumes only this: one timestamp column, one value column, and optionally 
 
    Each candidate and every baseline is fitted in the sandbox on cases from the whole file, then
    forecasts every series and lead from the last time in the file. Forecasts go into a hash-chained
-   `SealedLedger` (`lab/core/ledger.py`). The ledger refuses to seal a target that is not in the
-   future, so if the file is stale, those forecasts are skipped and the command says how many.
+   `SealedLedger` (`lab/core/ledger.py`). A target value is the mean over (target - step, target],
+   so a forecast is sealed only if that whole interval is still ahead: `target - step >= now`.
+   Forecasts whose target has already passed (a stale file) and forecasts whose interval has
+   already begun are skipped, and the command reports the two counts separately. With hourly data
+   this means a lead-1 forecast can be sealed only within the hour of the data's last timestamp.
    `--grade` reads a newer copy of the data, grades every due forecast whose value is now present,
    prints mean loss per candidate and lead, and verifies the chain.
 
@@ -80,8 +83,10 @@ so it assumes only this: one timestamp column, one value column, and optionally 
   averaged; steps without data are NaN. Text values such as `"$1,234.50"` are cleaned; other text
   becomes NaN, and each of these events appears as a note in the inspect output.
   Timestamps without a time zone are read as UTC.
-- **Cases.** For each series, each grid step at which the series has a value within the last
-  `history` steps (the issue time), and each lead whose target value exists: one case.
+- **Cases.** For each series, each grid step at which the series has a real observation within
+  the last `history` steps (the issue time), and each lead whose target has a real observation:
+  one case. The grid is never filled, so a target inside a gap has no case and every truth is
+  an observed value.
 - **Windows.** The span is cut by time into 60% train, 15% select, 10% confirm and 15% test.
   Cases whose lead crosses a cut are dropped, so each window ends before the next begins. Each window is a
   fixed subsample stratified by series and lead.
@@ -93,9 +98,11 @@ so it assumes only this: one timestamp column, one value column, and optionally 
 
 `series_id`, `ids` (dict of id values), `lead` (steps), `lead_h` (whole hours; the lab's score
 tables are keyed by it), `lead_hours`, `step_hours`, `y_hist` (`history` values, newest first,
-NaN where missing), `y_last` (newest non-missing value) and `y_last_age_steps`, `t_hist_hours`,
-the target's UTC `target_hour`, `target_dow`, `target_dom`, `target_month`, `cov_hist`
-(covariate histories), `known_future` (values at the target) and `peers`. Peers are up to 8 other
+NaN where missing, carried forward up to `max_fill_steps`), `y_hist_fill_steps` (0 = observed at
+that step, k = carried k steps, NaN = missing), `y_last` (newest real observation) and
+`y_last_age_steps`, `t_hist_hours`, the target's UTC `target_hour`, `target_dow`, `target_dom`,
+`target_month`, `cov_hist` and `cov_fill_steps` (covariate histories, filled the same way),
+`known_future` (values at the target) and `peers` (never filled). Peers are up to 8 other
 series with the same value of the first id column, or all other series when a series has no
 such partner. Where there are more than 8, the 8 whose step-to-step changes correlate most on the
 train window are used. Each peer carries `y_last`, `y_last_age_steps` and `y_hist7`.
@@ -112,8 +119,12 @@ train window are used. Each peer carries `y_last`, `y_last_age_steps` and `y_his
   utilisation, demand) hands the agents the future and makes every score meaningless.
 - Peer *selection* (not values) may use the train window. That is fine: candidates see all
   train truths anyway, and every later window lies after the train window.
-- Forward-filling is off by default. `max_fill_steps` fills only the first few steps of a gap
-  with data on both sides, so a value never runs on across a long outage.
+- Forward-filling is off by default. With `max_fill_steps` > 0 it applies only to the history
+  arrays a forecaster sees, never to truths. It is strictly causal: a value is carried at most
+  `max_fill_steps` steps from the last real observation, decided from data at or before the issue
+  time, so whether a gap is filled never depends on whether data come back later.
+  `y_hist_fill_steps` and `cov_fill_steps` mark carried values. Tested by corrupting, and
+  separately deleting, everything after issue times before, inside and after a gap.
 
 ## Demo data (synthetic)
 

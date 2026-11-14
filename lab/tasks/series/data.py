@@ -6,9 +6,9 @@ provider + region); with no id columns the whole table is one series called "all
 The grid: times `origin + k * step`, k = 0, 1, 2, ... The value at grid time t is
 the mean of the observations in the interval (t - step, t]. That interval ends AT t,
 so the value at t is fully known at time t (an observation made exactly at t counts
-for t). Steps with no observation are NaN. Nothing is forward-filled unless
-`max_fill_steps` > 0, and then only the first `max_fill_steps` steps of a gap that
-has data on both sides.
+for t). Steps with no observation are NaN. The grid is never filled: it holds only
+real observations, so truths are always observed values. Any forward-filling of
+history is done per case, causally, in cases.py (`max_fill_steps`).
 """
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ def series_ids(df: pd.DataFrame, id_cols: Sequence[str]) -> pd.Series:
 def build_grid(df: pd.DataFrame, *, time_col: str, value_col: str, id_cols: Sequence[str] = (),
                covariate_cols: Sequence[str] = (), known_future_cols: Sequence[str] = (),
                step: pd.Timedelta | None = None, origin: pd.Timestamp | None = None,
-               max_fill_steps: int = 0, log_target: bool = False, notes: list[str] | None = None) -> Grid:
+               log_target: bool = False, notes: list[str] | None = None) -> Grid:
     notes = notes if notes is not None else []
     need = [time_col, value_col, *id_cols, *covariate_cols, *known_future_cols]
     missing = [c for c in need if c not in df.columns]
@@ -222,8 +222,6 @@ def build_grid(df: pd.DataFrame, *, time_col: str, value_col: str, id_cols: Sequ
     def scatter(col: str) -> np.ndarray:
         a = np.full((len(sids), n_t), np.nan)
         a[si, ki] = g[col].to_numpy(float)
-        if max_fill_steps > 0:
-            a = pd.DataFrame(a.T).ffill(limit=int(max_fill_steps), limit_area="inside").to_numpy().T.copy()
         return a
 
     y = scatter("y")

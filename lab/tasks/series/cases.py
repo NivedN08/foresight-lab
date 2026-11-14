@@ -30,6 +30,25 @@ def hist(row: np.ndarray, i: int, n: int) -> np.ndarray:
     return np.where(idx >= 0, row[np.clip(idx, 0, None)], np.nan)
 
 
+def causal_fill(row: np.ndarray, i: int, n: int, max_fill: int) -> tuple[np.ndarray, np.ndarray]:
+    """History of `row` at index i (newest first, like `hist`) with each missing value
+    replaced by the last real observation at or before that position, if it is at most
+    `max_fill` steps older. Reads only row[:i + 1]. Returns (values, fill_steps): fill_steps
+    is 0 for a real observation, k for a value carried forward k steps, NaN where missing."""
+    lo = max(0, i - n - max_fill + 1)
+    seg = row[lo:i + 1]
+    ok = np.isfinite(seg)
+    last = np.maximum.accumulate(np.where(ok, np.arange(seg.size), -1))   # last observation <= each position
+    pos = (i - lo) - np.arange(n)                                          # newest first, may be < 0
+    valid = pos >= 0
+    src = np.where(valid, last[np.clip(pos, 0, None)], -1)
+    age = pos - src
+    use = valid & (src >= 0) & (age <= max_fill)
+    vals = np.where(use, seg[np.clip(src, 0, None)], np.nan)
+    steps = np.where(use, age, np.nan).astype(float)
+    return vals, steps
+
+
 def newest(h: np.ndarray) -> tuple[float, int]:
     """(newest finite value, its age in steps) of a newest-first array; (nan, -1) if none."""
     ok = np.flatnonzero(np.isfinite(h))
@@ -82,12 +101,17 @@ def choose_peers(grid: Grid, id_cols: Sequence[str], fit_end: int) -> tuple[list
 
 
 def build_case(grid: Grid, s: int, i: int, lead: int, peers: Sequence[int], history: int,
-               cov_cols: Sequence[str] = (), known_cols: Sequence[str] = ()) -> Case | None:
+               cov_cols: Sequence[str] = (), known_cols: Sequence[str] = (), max_fill: int = 0) -> Case | None:
     """The case issued at grid index i for series s, lead `lead` steps. None when the
-    series has no value in the last `history` steps. The target index may lie beyond
-    the grid (live forecasts); the truth is not part of the case."""
-    y_hist = hist(grid.y[s], i, history)
-    y_last, age = newest(y_hist)
+    series has no real observation in the last `history` steps. The target index may lie
+    beyond the grid (live forecasts); the truth is not part of the case.
+
+    With max_fill > 0, missing history values (of the series and the covariates) are
+    carried forward from the last real observation, at most max_fill steps, using only
+    data at or before each position (so never anything after the issue time); the
+    `*_fill_steps` arrays say which values were carried. Peers are never filled."""
+    y_last, age = newest(hist(grid.y[s], i, history))      # newest REAL observation
+    y_hist, y_fill = causal_fill(grid.y[s], i, history, max_fill)
     if age < 0:
         return None
     issue = grid.time(i)
@@ -102,6 +126,7 @@ def build_case(grid: Grid, s: int, i: int, lead: int, peers: Sequence[int], hist
         "lead_hours": float(lead_hours),
         "step_hours": float(step_h),
         "y_hist": y_hist,
+        "y_hist_fill_steps": y_fill,
         "y_last": y_last,
         "y_last_age_steps": age,
         "t_hist_hours": np.arange(history, dtype=float) * step_h,
@@ -109,10 +134,13 @@ def build_case(grid: Grid, s: int, i: int, lead: int, peers: Sequence[int], hist
         "target_dow": target.weekday(),
         "target_dom": target.day,
         "target_month": target.month,
-        "cov_hist": {c: hist(grid.cov[c][s], i, history) for c in cov_cols},
+        "cov_hist": {},
+        "cov_fill_steps": {},
         "known_future": {c: _at(grid.known[c][s], i + lead) for c in known_cols},
         "peers": [],
     }
+    for c in cov_cols:
+        inp["cov_hist"][c], inp["cov_fill_steps"][c] = causal_fill(grid.cov[c][s], i, history, max_fill)
     for o in peers:
         h7 = hist(grid.y[o], i, PEER_HIST)
         v, a = newest(hist(grid.y[o], i, history))

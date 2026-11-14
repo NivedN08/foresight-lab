@@ -7,9 +7,11 @@
 Sealing: each candidate file and each baseline is fitted, in the sandbox, on cases drawn
 from ALL the data in the file (every target up to the end of the data), then predicts one
 case per series and lead issued at the last grid time of the data. Each prediction is
-appended to a SealedLedger (lab/core/ledger.py), hash-chained. The ledger refuses to seal a
-target time that is not after the moment of sealing, so targets already in the past (the
-file is stale) are skipped and counted.
+appended to a SealedLedger (lab/core/ledger.py), hash-chained. A grid value at time t is
+the mean of the observations in (t - step, t], so a forecast is sealed only if that whole
+interval is still in the future: target - step >= now. Two kinds of skip are counted and
+reported separately: targets already in the past (the file is stale), and targets whose
+interval has already begun (part of what will be averaged has already happened).
 
 Grading: reads a newer copy of the data, puts it on the same grid (same step and origin as
 recorded in each sealed record), and grades every due record whose target value is now in
@@ -56,7 +58,8 @@ def seal_live(p: SeriesProblem, candidates: dict[str, str], ledger_dir: str | Pa
     if baselines:
         sources.update({f"baseline:{n}": s for n, s in p.baseline_sources().items()})
     ledger = SealedLedger(ledger_dir)
-    out = {"sealed": 0, "skipped_past": 0, "failed": [], "data_end": to_iso(data_end), "no_data": no_data}
+    out = {"sealed": 0, "skipped_past": 0, "skipped_open_bucket": 0, "failed": [], "data_end": to_iso(data_end),
+           "no_data": no_data}
     for name, src in sources.items():
         res = run_candidate(src, train_cases, train_truths, live, time_limit_s=time_limit_s, memory_limit_mb=1536)
         if not res.ok:
@@ -64,10 +67,13 @@ def seal_live(p: SeriesProblem, candidates: dict[str, str], ledger_dir: str | Pa
             out["failed"].append(name)
             continue
         sha = hashlib.sha256(src.encode("utf-8", "replace")).hexdigest()
-        recs, skipped = [], 0
+        recs, past, open_bucket = [], 0, 0
         for c, pred in zip(live, res.predictions):
             if c.target_time <= now:
-                skipped += 1
+                past += 1
+                continue
+            if c.target_time - g.step.to_pytimedelta() < now:
+                open_bucket += 1
                 continue
             recs.append({
                 "task": task_name(p), "model": name, "case_id": c.case_id, "issued_at": c.issue_time,
@@ -80,11 +86,16 @@ def seal_live(p: SeriesProblem, candidates: dict[str, str], ledger_dir: str | Pa
         if recs:
             ledger.seal_many(recs, now=now)
         out["sealed"] += len(recs)
-        out["skipped_past"] += skipped
-        log(f"  {name}: sealed {len(recs)}, skipped {skipped} whose target is not after now ({to_iso(now)})")
+        out["skipped_past"] += past
+        out["skipped_open_bucket"] += open_bucket
+        log(f"  {name}: sealed {len(recs)}; skipped {past} whose target is not after now ({to_iso(now)}) and "
+            f"{open_bucket} whose averaging interval (target - step, target] has already begun")
     if out["skipped_past"]:
-        log(f"skipped {out['skipped_past']} forecasts in total: their target time had already passed "
+        log(f"skipped {out['skipped_past']} forecasts in total because their target time had already passed "
             "(the data ends too long before now for those leads)")
+    if out["skipped_open_bucket"]:
+        log(f"skipped {out['skipped_open_bucket']} forecasts in total because the interval averaged into their "
+            "target value had already begun (only targets with target - step >= now are sealed)")
     ok, n, msg = ledger.verify()
     log(f"ledger {ledger.dir}: {n} records, chain {msg}")
     out["verified"] = ok

@@ -18,7 +18,7 @@ from lab.core.task import Case
 from lab.evalpool.evaluate import evaluate
 from lab.sandbox import lint, run_candidate
 from lab.tasks.series import candidates as C
-from lab.tasks.series.cases import MAX_PEERS, build_case, choose_peers
+from lab.tasks.series.cases import MAX_PEERS, build_case, causal_fill, choose_peers, hist
 from lab.tasks.series.data import build_grid, infer_step, parse_times, read_table
 from lab.tasks.series.live import grade_live, seal_live
 from lab.tasks.series.problem import SeriesProblem, stratified_pick, window_bounds
@@ -121,19 +121,104 @@ def test_reader_handles_messy_csv_and_buckets_to_the_step():
     assert "unreadable timestamp" in text and "not numbers" in text and "step inferred" in text
 
 
-def test_gaps_stay_nan_unless_a_short_fill_is_asked_for():
+def test_the_grid_holds_only_real_observations():
     t = pd.date_range(T0, periods=20, freq="h")
     keep = np.r_[0:5, 10:20]                        # a 5-step gap (indices 5..9)
     df = pd.DataFrame({"ts": t[keep], "v": np.arange(20.0)[keep]})
     g0 = build_grid(df, time_col="ts", value_col="v")
     assert np.isnan(g0.y[0, 5:10]).all() and g0.y[0, 4] == 4.0 and g0.y[0, 10] == 10.0
-    g2 = build_grid(df, time_col="ts", value_col="v", max_fill_steps=2)
-    assert list(g2.y[0, 5:7]) == [4.0, 4.0] and np.isnan(g2.y[0, 7:10]).all()
-    # nothing is filled after the last value of a series (only gaps with data on both sides)
-    df2 = pd.concat([df, pd.DataFrame({"ts": t[:20], "v": 1.0}).assign(id="b")]).fillna({"id": "a"})
-    df2 = df2[~((df2["id"] == "a") & (df2["ts"] > t[12]))]
-    g3 = build_grid(df2, time_col="ts", value_col="v", id_cols=("id",), max_fill_steps=3)
-    assert np.isnan(g3.y[0, 13:]).all()
+    with pytest.raises(TypeError):                  # filling is not a grid option any more
+        build_grid(df, time_col="ts", value_col="v", max_fill_steps=2)
+
+
+def test_causal_fill_carries_at_most_max_fill_steps_from_the_last_observation():
+    row = np.array([0.0, 1.0, np.nan, np.nan, np.nan, 5.0, np.nan])
+    v, f = causal_fill(row, 6, 7, 2)                # newest first: indices 6, 5, ..., 0
+    assert np.array_equal(v, [5, 5, np.nan, 1, 1, 1, 0], equal_nan=True)
+    assert np.array_equal(f, [1, 0, np.nan, 2, 1, 0, 0], equal_nan=True)
+    v0, f0 = causal_fill(row, 6, 7, 0)              # no fill: the raw history, fill steps 0 where observed
+    assert np.array_equal(v0, hist(row, 6, 7), equal_nan=True)
+    assert np.array_equal(f0, np.where(np.isfinite(v0), 0.0, np.nan), equal_nan=True)
+    v9, _ = causal_fill(row, 3, 6, 5)               # before the start of the row: NaN
+    assert np.array_equal(v9, [1, 1, 1, 0, np.nan, np.nan], equal_nan=True)
+    # the result never depends on anything after index i
+    other = row.copy()
+    other[4:] = 99.0
+    assert np.array_equal(causal_fill(row, 3, 4, 2)[0], causal_fill(other, 3, 4, 2)[0], equal_nan=True)
+
+
+def gap_frame():
+    """Hourly fixture; series G0|R0 has a 10-step gap (value and covariate) at grid indices 200..209."""
+    df = hourly_frame(gaps=False)
+    t = pd.to_datetime(df["ts"], utc=True)
+    in_gap = (df["gpu"] == "G0") & (df["region"] == "R0") & (t >= T0 + pd.Timedelta(hours=200)) \
+        & (t < T0 + pd.Timedelta(hours=210))
+    return df[~in_gap].reset_index(drop=True)
+
+
+@pytest.mark.parametrize("i", [199, 201, 203, 206, 212])
+def test_filled_history_with_a_gap_does_not_depend_on_later_data(tmp_path, i):
+    """max_fill_steps = 3, issue times before, inside and after a gap. Everything after
+    the issue time is corrupted, and in a second copy deleted outright (so the gap never
+    ends); the inputs are identical in all three."""
+    df = gap_frame()
+    p1 = hourly_problem(tmp_path, df, max_fill_steps=3)
+    g1 = p1.grid()
+    assert np.isnan(g1.y[0, 200:210]).all()        # the grid itself is never filled
+    issue = pd.Timestamp(g1.time(i))
+    corrupted = corrupted_copy(df, issue, drop_after=issue + pd.Timedelta(hours=7))
+    deleted = df[pd.to_datetime(df["ts"], utc=True) <= issue]
+    grids = [g1]
+    for k, frame in enumerate((corrupted, deleted)):
+        d = tmp_path / f"v{k}"
+        d.mkdir()
+        grids.append(hourly_problem(d, frame, max_fill_steps=3).grid())
+    peers = [choose_peers(g, ("gpu", "region"), 300)[0] for g in grids]
+    assert peers[0] == peers[1] == peers[2]
+    for s in range(len(g1.series)):
+        for lead in (1, 3, 7):
+            cs = [build_case(g, s, i, lead, peers[0][s], 30, ("units",), ("weekend",), max_fill=3) for g in grids]
+            assert cs[0] is not None
+            ref = {k: v for k, v in cs[0].inputs.items() if k != "known_future"}   # read at the target by design
+            for c in cs[1:]:
+                assert deep_equal(ref, {k: v for k, v in c.inputs.items() if k != "known_future"}), (i, s, lead)
+    c = build_case(g1, 0, i, 1, peers[0][0], 30, ("units",), max_fill=3)
+    x = c.inputs
+    # y_hist[k] is index i - k; the last real observation before the gap is index 199
+    for k in range(30):
+        j = i - k
+        if 200 <= j <= 209:
+            carried = j - 199
+            if carried <= 3:
+                assert x["y_hist"][k] == g1.y[0, 199] and x["y_hist_fill_steps"][k] == carried
+            else:
+                assert np.isnan(x["y_hist"][k]) and np.isnan(x["y_hist_fill_steps"][k])
+        else:
+            assert x["y_hist"][k] == g1.y[0, j] and x["y_hist_fill_steps"][k] == 0
+    assert np.array_equal(np.isnan(x["cov_hist"]["units"]), np.isnan(x["y_hist"]))
+    assert x["y_last"] == g1.y[0, min(i, 199)] if i <= 209 else x["y_last"] == g1.y[0, i]
+
+
+def test_no_case_has_its_target_in_a_gap(tmp_path):
+    """Truths are only real observations, even when history is filled."""
+    p = hourly_problem(tmp_path, gap_frame(), max_fill_steps=5, max_cases=10**9)
+    sp = p.splits()
+    g = p.grid()
+    pos = {s: k for k, s in enumerate(g.series)}
+    n = 0
+    for w in ("train", "select", "confirm", "test"):
+        win = getattr(sp, w)
+        for c, t in zip(win.cases, win.truths):
+            k = int(g.index_of(c.target_time))
+            assert t["y"] == g.y[pos[c.inputs["series_id"]], k] and math.isfinite(t["y"])
+            if c.inputs["series_id"] == "G0|R0":
+                assert not 200 <= k <= 209
+                n += 1
+    ids = {c.case_id for w in ("train", "select", "confirm", "test") for c in getattr(sp, w).cases}
+    assert f"G0|R0|{g.time(199):%Y-%m-%dT%H:%M:%SZ}|1" not in ids      # its target (index 200) is in the gap
+    assert f"G0|R0|{g.time(198):%Y-%m-%dT%H:%M:%SZ}|1" in ids          # its target (index 199) is observed
+    assert f"G0|R0|{g.time(203):%Y-%m-%dT%H:%M:%SZ}|7" in ids          # issued inside the gap, target 210 observed
+    assert n > 1000
 
 
 def test_parse_times_reads_unix_seconds_and_naive_text_as_utc():
@@ -491,10 +576,13 @@ def test_live_seals_then_grades_from_a_newer_file(tmp_path):
     cand = C.baseline_sources(1.0)["last_value"].replace('name = "last_value"', 'name = "mine"')
     end = p.grid().time(p.grid().end_index)
     assert end == cut.to_pydatetime()
-    # sealing 30 minutes after the end of the data: every target is still in the future
-    out = seal_live(p, {"mine": cand}, ledger, now=end + timedelta(minutes=30), log=lambda *a: None)
+    # sealing exactly at the end of the data: every target's interval (target - 1 h, target] is ahead
+    out = seal_live(p, {"mine": cand}, ledger, now=end, log=lambda *a: None)
     n_models = 1 + len(p.baseline_sources())
-    assert out["sealed"] == 6 * 3 * n_models and out["skipped_past"] == 0 and out["verified"]
+    assert out["sealed"] == 6 * 3 * n_models and out["verified"]
+    assert out["skipped_past"] == 0 and out["skipped_open_bucket"] == 0
+    assert all(from_iso_(r["target_time"]) - timedelta(hours=1) >= from_iso_(r["sealed_at"])
+               for r in SealedLedger(ledger).sealed())
     recs = SealedLedger(ledger).sealed()
     assert {r["model"] for r in recs} == {"mine"} | {f"baseline:{n}" for n in p.baseline_sources()}
     assert all(from_iso_(r["issued_at"]) == end for r in recs)
@@ -503,9 +591,19 @@ def test_live_seals_then_grades_from_a_newer_file(tmp_path):
     pos = {s: k for k, s in enumerate(g.series)}
     for r in mine:
         assert r["prediction"]["y"] == pytest.approx(g.y[pos[r["meta"]["series_id"]], g.end_index])
-    # sealing 2 hours after the end: lead 1 is in the past and skipped (and said so)
-    out2 = seal_live(p, {"mine": cand}, tmp_path / "ledger2", now=end + timedelta(hours=2), log=lambda *a: None)
-    assert out2["skipped_past"] == 6 * n_models and out2["sealed"] == 6 * 2 * n_models
+    # 30 minutes later the lead-1 target is still in the future, but its averaging interval has
+    # begun: skipped for that reason, not as past
+    said = []
+    out1 = seal_live(p, {"mine": cand}, tmp_path / "ledger1", now=end + timedelta(minutes=30), log=said.append)
+    assert out1["skipped_open_bucket"] == 6 * n_models and out1["skipped_past"] == 0
+    assert out1["sealed"] == 6 * 2 * n_models
+    assert any("interval" in m and "already begun" in m for m in said)
+    # 2.5 hours later: lead 1 is past, lead 3's interval (end+2h, end+3h] has begun, lead 7 is sealed
+    out2 = seal_live(p, {"mine": cand}, tmp_path / "ledger2", now=end + timedelta(hours=2, minutes=30),
+                     log=lambda *a: None)
+    assert out2["skipped_past"] == 6 * n_models and out2["skipped_open_bucket"] == 6 * n_models
+    assert out2["sealed"] == 6 * n_models
+    assert {r["meta"]["lead"] for r in SealedLedger(tmp_path / "ledger2").sealed()} == {7}
     # grading: nothing is due before the targets
     res0 = grade_live(p, newer, ledger, now=end + timedelta(minutes=45), log=lambda *a: None)
     assert res0["graded"] == 0
