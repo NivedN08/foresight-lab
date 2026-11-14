@@ -1,6 +1,6 @@
 {
  "name": "claim1_ladder_coast",
- "comment": "Claim 1 as a ladder. Same problem, budget (proposals) and decision rule; arms add one thing at a time: random_mutation (no model) < single_agent (one strong call) < researcher_plain (one strong call that names its idea's source) < researcher_memory (+ notebook) / researcher_search (+ ideas board from search) < researcher_full (both). pipeline is the first design (analyst, scout, engineer), kept as the documented negative result that motivated the ladder. Read both the equal-proposals and the equal-dollars views.",
+ "comment": "Claim 1 as a ladder. Same problem, budget (proposals) and decision rule; arms add one thing at a time: random_mutation (no model) < single_agent (one strong call) < researcher_plain (one strong call that names its idea's source) < researcher_memory (+ notebook) / researcher_search (+ ideas board from search) < researcher_full (both). pipeline is the first design (analyst, scout, engineer), kept as the documented negative result that motivated the ladder. Read both the equal-proposals and the equal-dollars views. Seeds: five for single_agent, researcher_plain and researcher_memory (three were added after two seeds proved too noisy to rank them); two for the other arms.",
  "problem": "coast_water",
  "budget": {
   "generations": 6,
@@ -14,7 +14,10 @@
  },
  "seeds": [
   1,
-  2
+  2,
+  3,
+  4,
+  5
  ],
  "arms": [
   {
@@ -22,7 +25,11 @@
    "comment": "No model: constants perturbed or one term dropped.",
    "mode": "random_mutation",
    "memory": "none",
-   "search": "none"
+   "search": "none",
+   "seeds": [
+    1,
+    2
+   ]
   },
   {
    "name": "single_agent",
@@ -39,6 +46,10 @@
    "search": "openalex",
    "search_fallback": [
     "arxiv"
+   ],
+   "seeds": [
+    1,
+    2
    ]
   },
   {
@@ -63,6 +74,10 @@
    "search": "openalex",
    "search_fallback": [
     "arxiv"
+   ],
+   "seeds": [
+    1,
+    2
    ]
   },
   {
@@ -73,6 +88,10 @@
    "search": "openalex",
    "search_fallback": [
     "arxiv"
+   ],
+   "seeds": [
+    1,
+    2
    ]
   }
  ]

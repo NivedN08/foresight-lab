@@ -409,7 +409,7 @@ def build(root, name: str, target: float | None = None, compare: tuple[str, str]
     manifest, runs = load_runs(Path(root), name)
     cfg = manifest.get("config") or {}
     seeds = cfg.get("seeds") or sorted({r["seed"] for r in runs})
-    planned = {a["name"]: len(seeds) for a in cfg.get("arms", [])}
+    planned = {a["name"]: len(a.get("seeds") or seeds) for a in cfg.get("arms", [])}
     for arm in dict.fromkeys(r["arm"] for r in runs):      # runs outside the config still count
         planned[arm] = max(planned.get(arm, 0), len({r["seed"] for r in runs if r["arm"] == arm}))
     skipped = [r for r in (manifest.get("runs") or []) if r.get("status") in ("skipped", "blocked")]

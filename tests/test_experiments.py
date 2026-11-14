@@ -180,17 +180,28 @@ def test_cheat_sheet_arm_and_text(tmp_path):
     assert len(long) <= 600 and long.endswith("(cut to length)\n")
 
 
-def test_config_validation_and_shipped_configs():
+def test_config_validation_and_shipped_configs(tmp_path):
     assert sorted(p.stem for p in CONFIGS.glob("*.json")) == [
         "claim1_ladder_coast", "claim2_transfer_turb_v2", "claim3_search_coast", "claim4_memory_coast"]
     for p in sorted(CONFIGS.glob("*.json")):
         cfg = load_config(p)
         assert cfg["name"] == p.stem and cfg["comment"]
-        assert cfg["budget"] == {"generations": 6, "proposals": 4, "max_cost_usd": 4.0} and cfg["seeds"] == [1, 2]
+        assert cfg["budget"] == {"generations": 6, "proposals": 4, "max_cost_usd": 4.0}
+        assert cfg["seeds"] == ([1, 2, 3, 4, 5] if p.stem == "claim1_ladder_coast" else [1, 2])
     arms = {p.stem: {a["name"]: a for a in load_config(p)["arms"]} for p in CONFIGS.glob("*.json")}
     assert list(arms["claim1_ladder_coast"]) == ["random_mutation", "single_agent", "pipeline", "researcher_plain",
                                                  "researcher_memory", "researcher_search", "researcher_full"]
     ladder = arms["claim1_ladder_coast"]
+    # three arms run five seeds; the others keep their own list of two
+    assert {n: a.get("seeds") for n, a in ladder.items()} == {
+        "random_mutation": [1, 2], "single_agent": None, "pipeline": [1, 2], "researcher_plain": None,
+        "researcher_memory": None, "researcher_search": [1, 2], "researcher_full": [1, 2]}
+    from lab.experiments.matrix import check_config, plan
+    planned = plan(load_config(CONFIGS / "claim1_ladder_coast.json"), root=tmp_path, env={})
+    assert len(planned) == 3 * 5 + 4 * 2
+    assert sorted(r.seed for r in planned if r.arm == "pipeline") == [1, 2]
+    with pytest.raises(ValueError, match="seeds must be"):
+        check_config({"problem": "x", "budget": {}, "seeds": [1], "arms": [{"name": "a", "seeds": []}]})
     assert (ladder["researcher_plain"]["memory"], ladder["researcher_plain"]["search"]) == ("none", "none")
     assert (ladder["researcher_memory"]["memory"], ladder["researcher_memory"]["search"]) == ("vector", "none")
     assert (ladder["researcher_search"]["memory"], ladder["researcher_search"]["search"]) == ("none", "openalex")
@@ -236,7 +247,7 @@ def test_ladder_configs_dry_run(tmp_path):
     assert not any(tmp_path.iterdir())                                   # a dry run writes nothing
     ladder = dry_run(load_config(CONFIGS / "claim1_ladder_coast.json"), root=tmp_path, echo=lambda s: None,
                      rates=rates)
-    assert len(ladder["runs"]) == 14 and {r["action"] for r in ladder["runs"]} == {"new"}
+    assert len(ladder["runs"]) == 23 and {r["action"] for r in ladder["runs"]} == {"new"}   # 3 arms x 5 seeds + 4 x 2
 
 
 def test_dry_run_estimates(tmp_path, matrix_root):

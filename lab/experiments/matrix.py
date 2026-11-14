@@ -39,7 +39,7 @@ DEFAULT_ROOT = PROJECT_ROOT / "runs" / "exp"
 FINISHED = ("finished", "stopped_cost_cap")
 CARRY = ("none", "playbook_only", "notebook_only", "both", "shuffled_notebook", "cheat_sheet")
 ARM_KEYS = {"name", "comment", "mode", "memory", "search", "search_fallback", "models", "llm", "start_source",
-            "carry", "warm_from", "shuffle_memory", "requires_env"}
+            "carry", "warm_from", "shuffle_memory", "requires_env", "seeds"}
 CHEAT_SHEET_CHARS = 2000
 
 
@@ -64,6 +64,9 @@ def check_config(cfg: dict) -> None:
         unknown = set(a) - ARM_KEYS
         if unknown:
             raise ValueError(f"arm {a['name']}: unknown keys {sorted(unknown)}")
+        own = a.get("seeds")
+        if own is not None and (not isinstance(own, list) or not own or not all(isinstance(x, int) for x in own)):
+            raise ValueError(f"arm {a['name']}: seeds must be a non-empty list of whole numbers")
         carry = a.get("carry", "none")
         if carry not in CARRY:
             raise ValueError(f"arm {a['name']}: carry must be one of {CARRY}")
@@ -129,7 +132,7 @@ def plan(cfg: dict, root: Path, only: list[str] | None = None, env=None) -> list
     for arm in cfg["arms"]:
         if only and arm["name"] not in only:
             continue
-        for seed in cfg["seeds"]:
+        for seed in arm.get("seeds") or cfg["seeds"]:     # an arm may have its own seed list
             run_dir = root / cfg["name"] / arm["name"] / f"seed{seed}"
             missing = [k for k in required_env(arm) if not env.get(k)]
             if missing:
