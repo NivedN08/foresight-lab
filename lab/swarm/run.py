@@ -21,6 +21,9 @@ from pathlib import Path
 
 PROBLEMS = {
     "coast_water": "lab.tasks.coast.problem:CoastWaterProblem",
+    "turb": "lab.tasks.turb.problem:TurbProblem",
+    # a CSV table; the config file is named by $LAB_SERIES_CONFIG (docs/series.md)
+    "series": "lab.tasks.series.problem:from_env",
 }
 
 
