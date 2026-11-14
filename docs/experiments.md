@@ -106,6 +106,43 @@ two assets, the notebook and the ideas board, as inputs it may use or ignore. Th
 became a ladder that adds one asset at a time. The old result directories (`runs/exp/claim1_coast`,
 `runs/exp/claim2_transfer_turb`) are kept; the new matrices write to new names.
 
+## What the ladder showed
+
+`runs/exp/claim1_ladder_coast` (6 generations x 4 proposals, seeds 1 and 2, all 14 runs finished).
+Confirm loss of the final forecaster, cm; the starting formula scores 3.239.
+
+| arm | seed 1 | seed 2 | $ per run | minutes per run |
+|---|---|---|---|---|
+| random_mutation | 3.239 | 3.239 | 0 | 3.2 |
+| pipeline (the first design) | 3.129 | 3.043 | 2.29 | 11.3 |
+| single_agent | 2.679 | 2.693 | 0.98 | 4.0 |
+| researcher_plain | 2.713 | 2.820 | 1.10 | 3.3 |
+| researcher_memory | 2.636 | 3.116 | 1.36 | 3.3 |
+| researcher_search (search failed, see below) | 2.382 | 2.825 | 1.23 | 26.9 |
+| researcher_full (search failed, see below) | 2.362 | 2.710 | 1.74 | 23.6 |
+
+What this supports, and what it does not:
+
+- Random code changes never passed the decision rule (0 of 48). Every arm with one strong model
+  call per proposal ended between 2.36 and 3.12 cm, below the starting formula in all eight runs.
+- The first design, `pipeline`, was again the worst arm that uses a model, at twice the cost.
+- **The two search arms did not test search.** OpenAlex refused all 72 calls (its keyless daily
+  allowance was used up) and arXiv answered 21 of 72. No scouted idea was offered in
+  `researcher_search`; in `researcher_full` 23 were offered, 4 were used and none passed. Those
+  arms are in effect two more runs each of `researcher_plain` and `researcher_memory`.
+- Read that way, the same setup gives 2.38 to 2.82 cm without the notebook and 2.36 to 3.12 cm
+  with it. The spread between seeds (up to 0.5 cm) is larger than any difference between arms.
+  With two seeds the ladder cannot rank single agent, researcher, or researcher with notebook.
+- Ideas the researcher marked as coming from the notebook passed the rule more often than its
+  own (19 of 27 against 22 of 65 in the two notebook arms), but fewer of them were adopted per
+  pass (6 of 19 against 11 of 22). The 27 notebook-sourced proposals drew on only 12 distinct
+  notebook entries per generation: up to all four proposals in a generation picked the same
+  entry and wrote the same change. The pass rate counts one idea several times, so it is not
+  evidence of better ideas. Proposals in one generation should be made to differ.
+
+The search failure was fixed before the search experiment ran: Crossref was added as a keyless
+source, requests are spaced, and a used-up daily allowance is no longer retried (`docs/swarm.md`).
+
 ## The ready-made matrices
 
 All four use small budgets: 6 generations x 4 proposals, seeds 1 and 2, a $4 cap per run, and the
