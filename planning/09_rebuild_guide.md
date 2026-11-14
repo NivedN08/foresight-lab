@@ -1,26 +1,39 @@
-# Rebuild guide
+# On-site build plan
 
-Use this only if the organizers say code written before the event cannot be submitted. It lists what to build on site, in priority order, with the lessons from the rehearsal so nothing is rediscovered the hard way. Submit only what is written at the event, and say plainly what was prepared beforehand: plans, test designs, knowledge of the data sources.
+The event's rule is "Build entirely during the event. No prior commits to the repo." So this is the plan, not a fallback. On Saturday at 10:20 we start an empty repository and write everything in it.
+
+**What we bring and what we do not.** We bring what we learned on Friday: this plan, the test lists, which data sources work, and the traps below. We do not bring files. Nothing is copied from the rehearsal repository into the event repository, by hand or by a tool, and the rehearsal's numbers are not event results. The README and the pitch say that the design was rehearsed the day before and that every line in the repository was written at the event.
 
 Each block lists what it is, the tests that prove it, and the traps we already hit. Times assume one person with a coding assistant.
 
-## Order
+## Order and lanes
 
-| # | Block | Time | Needed for |
-|---|---|---|---|
-| 1 | Sealed ledger | 30 min | Everything live |
-| 2 | Problem interface, time splits, block statistics | 45 min | Everything else |
-| 3 | One problem end to end: data, cases, baselines, seed formula, backtest | 2–3 h | Claim 1 |
-| 4 | Live sealing job and state file | 1–1.5 h | The demo |
-| 5 | Sandbox | 1.5 h | Running agent-written code |
-| 6 | Evaluator | 1 h | The lab |
-| 7 | Research loop with notebook and search | 2–3 h | Claims 1–4 |
-| 8 | Dashboard | 2–3 h | The demo |
-| 9 | Generic time-series adapter for the track task | 1.5 h | Pacific |
-| 10 | Sponsor backends (Modal, Exa, past.dev) | 1 h each | Sponsor prizes |
-| 11 | Experiment runners and the one-time test scorer | 1.5 h | The tables |
+| # | Block | Time | Lane | Needed for |
+|---|---|---|---|---|
+| 1 | Sealed ledger | 30 min | Smaran | Everything live |
+| 2 | Problem interface, time windows, block statistics | 45 min | Nived | Everything else |
+| 3 | The coast problem end to end: data, cases, baselines, starting formula, rewind test | 2–3 h | Atul | The result |
+| 4 | Sealing job and state file | 1–1.5 h | Atul | The demo |
+| 5 | Sandbox | 1.5 h | Nived | Running model-written code |
+| 6 | Evaluator and decision rule | 1 h | Nived | The lab |
+| 7 | Research loop: one strong model per proposal | 1.5 h | Nived | Track 1 |
+| 8 | Dashboard: coast view, then lab view | 2–3 h | Smaran | The demo |
+| 9 | Exa ideas board in the main loop, with sources kept | 1 h | Smaran | Exa challenge |
+| 10 | Notebook: local store, then past.dev | 1–1.5 h | Smaran | past.dev challenge |
+| 11 | Experiment runner, report, one-time test scorer | 1.5 h | Nived | The tables |
+| 12 | Modal: sandboxed evaluations and the scheduled sealing job | 1–2 h | whoever is free | Modal prize |
 
-Blocks 1–2, 5 and 8 are independent and can be built in parallel by different people from the start. Block 3 is the long pole.
+Blocks 1, 2, 3, 5 and 8 start at once, in parallel. Block 3 is the long pole and block 4 has a deadline: the first forecasts must be sealed by about 15:00 Saturday so that 24-hour forecasts are graded before Sunday's submission.
+
+**Not rebuilt:** the turbulence application, the generic time-series adapter, the three-role pipeline, the transfer experiment. The rehearsal showed the first is a second demo we cannot afford, the second belongs to another track, and the last two did not work.
+
+## What Friday's rehearsal measured (so we do not rediscover it)
+
+- One strong model per proposal plus a strict judge did the work: 19% below the hand-written formula on a window it never saw (3.17 against 3.92 cm; best simple rule 4.45; tide table 32.7).
+- A three-role pipeline (analyst, scout, engineer) was worse and cost twice as much. Random code changes never passed.
+- The notebook, free scholarly search, and carrying a notebook to a second problem showed no measurable effect. Whether Exa or past.dev do is the open question the event runs answer; report it either way.
+- The same arm with the same seed moved by 0.1 to 0.4 cm between two runs. Two seeds say nothing. Use five, and compare arms seed by seed.
+- A run of 24 proposals takes about four minutes and about one dollar of model use. The whole ladder (23 runs) took about an hour and a half on one laptop.
 
 ## 1. Sealed ledger
 
@@ -66,7 +79,7 @@ Every cycle: refresh data, fit on history strictly before now, build cases for n
 Traps:
 - **A long sleep call does not advance while the computer sleeps.** Schedule on the wall clock in short naps.
 - **One dead host froze a cycle for an hour.** Short timeouts, and skip a host for ten minutes after two failures.
-- **Keep the machine awake** (`caffeinate -i -w <pid>`), lid open. Better: run the job on a scheduled Modal function.
+- **Keep the machine awake** (`caffeinate -i -w <pid>`), lid open, plugged in. The laptop slept four times on Friday and each time the jobs stopped. Better: run the job on a scheduled Modal function.
 - **Lead labels:** measure lead as target time minus sealing time, exactly.
 
 ## 5. Sandbox
@@ -87,18 +100,40 @@ Per proposal: a failure digest computed by code, then ONE call to a strong model
 
 Decision rule: wins on select (95% of block resamples, at least 0.3% lower loss) and is not worse on confirm.
 
-Lessons from the first runs:
+Lessons from the rehearsal runs:
 - The confirm window matters: the first proposal that improved select was worse on confirm.
-- Ten generations of six proposals took 14 minutes and about $7 with a small model for analysis and a mid-size model for code, and cut loss by 12% on select and 15% on confirm.
-- Keyless scholarly search is rate-limited and often off-topic; retry, fall back, and record which backend answered.
 - Make each proposal change one thing, or findings cannot be interpreted.
+- **Make the proposals in one generation differ.** With a notebook, up to all four proposals in a generation picked the same entry and wrote the same change. Give each slot a different place to look, and show each one what the others in its generation chose if they run in sequence.
+- Free scholarly search is fragile. OpenAlex's keyless daily allowance is shared by network address and ran out; arXiv needs three seconds between requests and returns off-topic papers because it ORs the words; Crossref worked every time. Space the requests, do not retry a "daily limit" reply, and record which source answered. With an Exa key, use Exa.
+- Ask the model, before it sees any search result, to list what it would try. Mark each search-derived change as already listed or new. In the rehearsal four of five search-derived changes that passed were already listed.
 - Do not build the three-role pipeline (analyst, scout, engineer made to implement the scouted idea). We built it first and a single strong model beat it at a third of the cost per proposal. Give the strong model the notebook and the scouted ideas as optional inputs instead.
 - Keep confirm-window figures out of everything the agents read; tell them only whether the later-window check passed.
 
 ## 8. Dashboard
 
-Static page, no build step, libraries and fonts bundled. Reads each application's state file through a small local server. The design brief is `docs/dashboard_design.md`: a printed-chart look, magenta only for what was sealed in advance, ink for what was measured, blue for the official reference.
+Static page, no build step, libraries and fonts bundled. Reads the state file through a small local server. The look we settled on: a printed nautical chart; magenta only for what was sealed in advance, ink for what was measured, blue for the official tide table.
 
-## 9–11
+Traps:
+- **A scoreboard that averages each model over its own forecasts misleads.** The lab's forecaster starts hours after the hand-written ones, so its column covers different hours. Compare it with the others only on forecasts they all made, and say how many those are.
+- The demo is 90 seconds. Build the coast view first: one station's curve with sealed marks and the measured line, the scoreboard, the chain status. The lab view (score curve, list of changes with sources) is second.
 
-See `docs/series.md`, `04_sponsor_playbook.md` and `03_experiment_protocol.md`.
+## 9. Exa in the main loop
+
+Once per generation a small model writes two or three queries from the failure digest; Exa answers; the hits become a short board of ideas, each with its source link; the proposing model may use one or ignore the board and must say which. The rule for the challenge: at least one Exa call in the main loop, and the demo shows the sources. Keep every hit's title and link with the change that used it, so the lab view can show them.
+
+## 10. Notebook
+
+One finding per tested change: what was tried, where the idea came from, the measured effect on the select window, and whether the later-window check passed. Keep confirm-window figures out. Local store first (plain text search is enough), then past.dev behind the same two calls (write a finding, recall for a query). For the past.dev challenge the comparison is: no notebook, everything pasted into the prompt, local store, past.dev; report error, time and cost separately, five seeds.
+
+## 11. Experiment runner, report, test scorer
+
+Arms x seeds, each run in its own process, resumable, with a cost cap. The report compares arms seed by seed and refuses to call a difference with fewer than five seeds. The time-to-target goal is fixed before the runs: 5% below the starting formula on the confirm window.
+
+Test scorer traps:
+- Write down which forecaster gets the look before looking (lowest confirm loss across finished runs).
+- Score every baseline **and the starting formula** in the same look. On Friday the scorer left the starting formula out and it took a second look to get it.
+- Log every look with the hash of the code.
+
+## 12. Modal
+
+Evaluations: one sandbox per candidate, many at once. Sealing job: a scheduled function writing the ledger to a volume, so no laptop has to stay awake. Untested before the event; budget time to read their docs.

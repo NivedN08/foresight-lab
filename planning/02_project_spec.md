@@ -1,6 +1,8 @@
 # Project spec
 
-Working name: **foresight-lab**. Headline application: the sea on the US West Coast (chosen Nov 13). Aviation turbulence is the second problem, used to test whether a lab that has worked on one problem is faster on another.
+Working name: **foresight-lab**. Track 1 (Build Your Own Autoresearch Framework). Headline application: the sea on the US West Coast (chosen Nov 13).
+
+This document describes the rehearsal build of Nov 13. The event's rule is that everything is built at the event, so the event repository is written from scratch on site (`09_rebuild_guide.md`); it rebuilds the coast application and the lab, not the turbulence application or the generic time-series adapter.
 
 ## One sentence
 

@@ -247,6 +247,28 @@ Oct 31 to Nov 13. Mean absolute error in cm with 95% intervals that resample sta
 - The live forecasters lab-a and lab-b give the same error at four of five leads: the eight
   generations between them changed little outside the window they were selected on.
 
+## What the transfer experiment showed
+
+`runs/exp/claim2_transfer_turb_v2` (turbulence problem, researcher mode, vector notebook, search
+off, seeds 1 and 2; warm arms carry the notebook and playbook of the coast `researcher_memory`
+run with the same seed). Loss is the Brier score x 100 on the confirm window; the starting
+formula scores 17.05.
+
+| arm | what it carries from the coast | seed 1 | seed 2 |
+|---|---|---|---|
+| fresh | nothing | 15.92 | 15.73 |
+| cheat_sheet | the code interface and sandbox rules only | 15.49 | 16.01 |
+| warm_notebook | the notebook | 15.44 | 15.51 |
+| warm_shuffled | the notebook with outcomes shuffled | 15.62 | 15.68 |
+| warm | the notebook and the playbook | 15.63 | 15.78 |
+
+- Every arm improved on the starting formula by 6 to 9%, and every run reached the target, in
+  8 to 20 proposals (fresh 8 and 12; warm 8 and 12; the cheat sheet arm was slowest at 16 and 20).
+- Warm against fresh: lower on one seed, higher on the other. The shuffled notebook did as well
+  as the real one. The whole spread between arms is 0.35, the size of the spread between seeds.
+- So this gives no evidence that a lab which has worked on the coast is better at a new problem.
+  Two seeds could not show a small effect; they do rule out a large one.
+
 ## The ready-made matrices
 
 All four use small budgets: 6 generations x 4 proposals, seeds 1 and 2, a $4 cap per run, and the

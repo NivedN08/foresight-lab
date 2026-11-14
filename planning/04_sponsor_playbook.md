@@ -4,7 +4,7 @@ One section per prize: what the sponsor asked for, what we show, the number to p
 
 ## Main prizes (top 3)
 
-**What judges are told to look for:** experimental design, benchmark performance, reproducibility, baseline comparisons, quality of conclusions.
+**How it is scored:** 100 points, 20 each for Technicality, Creativity, Usefulness, Demo, and Track / sponsor alignment. The finals take the top 2 of each track, then the challenge winners.
 
 **What we show**
 - A forecast locked in before the fact, next to what then happened, live on the dashboard.
@@ -15,25 +15,26 @@ One section per prize: what the sponsor asked for, what we show, the number to p
 
 **Weak point to say first:** one weekend of weather; at one hour ahead the simple rule is nearly as good.
 
-## Pacific: Track 2, Recursive Self-Improvement (GPU price forecasting)
+## Track 1: Build Your Own Autoresearch Framework
 
-**What the CEO said:** "Our track is on GPU price forecasting and I'll be judging it on the Sunday."
+**The brief:** "Build a system that runs the research loop on its own: proposes a hypothesis, runs the experiment, reads the result and decides what to try next."
 
 **What we show**
-- The same lab pointed at Pacific's price data on Saturday, through the generic time-series adapter (`lab/tasks/series/`): seed forecaster, baselines (last value, seasonal naive, moving average), the rewind test, and sealed forecasts for prices that do not exist yet.
-- The self-improvement evidence: a lab that has already worked on other problems against a fresh lab, same budget, on Pacific's data, which neither has seen.
+- The loop, with the brief's four verbs as its four stages. Each proposal is one change with a stated reason (the hypothesis). The experiment is a refit in a sandbox scored on later data. The result is read by code: a failure digest and a decision rule. What to try next comes from the digest, the notebook and the ideas board.
+- That the loop is not tied to the coast: a problem is four time-ordered windows and a loss.
+- The control that makes it research and not search: random code changes, same budget, never passed.
 
-**Slide numbers**
-- Forecast error on Pacific's held-out window against their baseline or the best naive rule.
-- Evaluations and dollars to reach a target fixed in advance: fresh, fresh plus old forecaster, warm, warm with shuffled notebook.
+**Slide number:** error on the test window: tide table, best simple rule, hand-written formula, the lab's formula.
 
-**Experiment:** claim 2 in `03_experiment_protocol.md`.
+**Weak point to say first:** more machinery did not help. A three-role swarm lost to one model; the notebook and free search added nothing measurable in rehearsal.
 
-**Questions for Pacific at kickoff:** the horizon and score they care about; whether they prefer accuracy on their data or the self-improvement evidence; whether sealed forecasts for next week's prices would interest them.
-
-**Weak point:** if the warm lab does not beat "fresh plus old forecaster", the honest claim is that the lab reuses answers, not that it improves itself. We report whichever happens.
+Pacific's track (GPU prices two to three years out) is not part of this plan.
 
 ## Exa: "find what it doesn't already know"
+
+**The condition:** "At least one Exa API call must run in your project's main loop, and your demo must show your sources." So Exa is on in the default loop, and the lab view shows the source link of every change that used a board idea.
+
+**What rehearsal showed with free scholarly search (not Exa):** 19 of 96 proposals took an idea from search; 5 passed; 4 of those 5 were an idea the model had already listed before seeing any result; final error was no lower. The Exa arm is the test of whether a better search changes that.
 
 **What we show**
 - Search is how the lab gets ideas to test. Each proposal states a knowledge gap, answers it closed-book first, then searches; the claim it tests is marked as already known to the model or new.
@@ -68,6 +69,8 @@ One section per prize: what the sponsor asked for, what we show, the number to p
 | Full context | | | | |
 | Vector store | | | | |
 | past.dev | | | | |
+
+**What rehearsal showed for the three local rows (2 seeds, confirm window):** 3.05, 2.93 and 3.00 cm; all six runs reached the target in 12 to 20 proposals; the notebook cost about 25% more per run. Over five seeds the notebook arm averaged 2.73 cm against 2.89 without it, lower on 4 of 5 seeds, not significant. So expect a small or null effect and plan five seeds.
 
 **Experiment:** claim 4. Needs the past.dev key; the three local backends run before then.
 

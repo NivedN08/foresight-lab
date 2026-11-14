@@ -1,10 +1,10 @@
 # Event brief: SF AI Research Hackathon
 
-Compiled Nov 13, 2026 from the event page, the Luma page, organizer posts and sponsor documentation. Items marked "unconfirmed" are not published anywhere we could find and must be asked at kickoff.
+Compiled Nov 13, 2026 from the event page, its Resources tab (read at 10:30pm), the Luma page, organizer posts and sponsor documentation. Items marked "unconfirmed" are not published anywhere we could find and must be asked at kickoff.
 
 ## Basics
 
-- **When:** Sat Nov 14 (doors 8:30, kickoff 9:00) to Sun Nov 15. The event site says Sunday ends 6pm; Luma says 7pm.
+- **When:** Sat Nov 14 (check-in 8:00, kickoff 9:00, hacking from 10:20) to Sun Nov 15 (submissions due 14:30, prizes 18:00).
 - **Where:** San Francisco, in person only. Every team member must be on site the whole time.
 - **Team:** 3–5 people. Ours: Nived, Smaran, Atul.
 - **Organizer:** Iterate, with Boardy.
@@ -17,9 +17,9 @@ Compiled Nov 13, 2026 from the event page, the Luma page, organizer posts and sp
 3. AI Scientist Swarms
 4. World Models, by Applied Reality (we are not entering this one)
 
-"Benchmarks, datasets and starter resources for each track" are promised. They are behind the event login and were not posted as of Friday afternoon.
+"Benchmarks, datasets and starter resources for each track" are promised. As of Friday night the Resources tab (behind the event login) had the rules, rubric and schedule but no datasets or starter repos.
 
-**Our track: 2.** It has its own prize pool, and its task (forecasting) is the same shape as our project.
+**Track for this plan: 1.** Track 2's task turned out to be fixed (GPU prices, two to three years out), so the coast project does not fit it. The Track 1 wording describes our loop step for step.
 
 ## Sponsor challenges (open to every track)
 
@@ -46,16 +46,58 @@ Compiled Nov 13, 2026 from the event page, the Luma page, organizer posts and sp
 
 $250 Modal, $200 Devin, $100 Tinker, $50 Exa, plus OpenAI API credits.
 
-## How it is judged
+## How it is judged (from the event's Resources tab, read Nov 13 at 10:30pm)
 
-No rubric is published for this event. What the organizer has written elsewhere:
+100 points, five equal criteria of 20 each:
 
-- Research events should be judged on "experimental design, benchmark performance, reproducibility, baseline comparisons, and the quality of the conclusions".
-- "A polished interface or persuasive demo is not enough." Teams must say what they tested, how it was evaluated, and whether the evidence supports the hypothesis.
-- Negative results count. At the previous research event one team was praised for finding a data leak planted in the benchmark and refusing to use it.
-- Suggested demo structure: problem, approach, demo, evidence, limitations, next step. A backup recording is fine but should not replace proof that the system works.
-- Format seen at the last event: a first round, then finalists pitch on stage.
-- Past winners shared three things: a rigorous benchmark (one with hidden ground truth), honest baselines including negative results, and verified results.
+| Criterion | What we show for it |
+|---|---|
+| Technicality | Sealed ledger, sandbox, time-ordered windows, block statistics, the research loop |
+| Creativity | Forecasts locked in before the answer exists and graded by measurements we do not control |
+| Usefulness | The sea is running 30 to 55 cm above the tide tables; the lab's formula cuts error against every simple rule |
+| Demo | The live chart: sealed versus measured, updating in the room |
+| Track / sponsor alignment | Track 1's own wording, step for step; Exa in the main loop; past.dev as the shared notebook; Modal for sandboxes and the sealing job |
+
+**Round 1** (Sunday 14:45, in a room): 5 minutes per team. Pitch 1:30 (the problem, the approach, a high-level scheme), live demo 1:30, questions 2:00.
+**Finals** (Sunday 16:30, on stage): the top 2 of each track, then the challenge winners; 8 to 10 teams; 3 minutes each (pitch 1:30, demo 1:30), no questions.
+**To submit by Sunday 14:30:** a 2-minute demo video, the GitHub repo link, a short description.
+
+The organizer's earlier writing about research events still describes what the judges like: experimental design, baselines, honest negative results, "a polished interface or persuasive demo is not enough". It is not the rubric.
+
+## Rules that bind us
+
+- **"Build entirely during the event. No prior commits to the repo."** The rehearsal repository cannot be submitted, and no file from it goes into the event repository. We start an empty repository after kickoff and write everything there. What we bring is what we learned: the plans, the test designs, which data sources work, and the mistakes already made (`09_rebuild_guide.md`). Numbers from the rehearsal are not event results and are not presented as such.
+- One track per team; sponsor challenges are optional and can all be entered.
+- Open-source libraries, APIs and pre-trained models are allowed if credited.
+- All team members on site for the whole event. Team of 3 to 5, created on the platform's Teams panel; the team list closes Sunday 12:00.
+- Exa challenge: "At least one Exa API call must run in your project's main loop, and your demo must show your sources."
+
+## Tracks in the organizers' words
+
+1. **Build Your Own Autoresearch Framework.** "Build a system that runs the research loop on its own: proposes a hypothesis, runs the experiment, reads the result and decides what to try next." **This is the track this plan is for.**
+2. Recursive Self-Improvement by Pacific. "An AI scientist that forecasts H100 and A100 resale and rental prices 2-3 years out, and learns from its own past forecasting errors."
+3. AI Scientist Swarms. "A team of agents that forms hypotheses, runs experiments and actively tries to prove its own results wrong."
+4. World Models by Applied Reality. Brief not posted.
+
+## Schedule (all times Pacific; venue: 1885 Mission St, San Francisco)
+
+| When | What |
+|---|---|
+| Sat 08:00 | Check-in, breakfast, team formation |
+| Sat 09:00 | Kickoff and sponsor challenge intros |
+| Sat 10:00 | Talk (personal agents, memory, continual learning) |
+| Sat 10:20 | Hacking begins |
+| Sat 13:00 | Lunch and sponsor office hours |
+| Sat 19:00 | Dinner, then overnight hacking |
+| Sun 08:00 | Breakfast |
+| Sun 12:00 | Team list closes on the platform |
+| Sun 13:30 | Judging schedule posted on Discord (room and time) |
+| Sun 14:30 | Hacking ends, submissions due |
+| Sun 14:45 | Round 1 |
+| Sun 16:30 | Finals |
+| Sun 18:00 | Prizes and closing |
+
+News is posted on the event's Discord (link on the Resources tab, with the venue Wi-Fi details). Credit claim links for Modal, Devin, Tinker, Exa and OpenAI were still placeholders on Friday night; past.dev API access was "to be confirmed".
 
 ## Judges worth designing for
 
@@ -73,10 +115,9 @@ No rubric is published for this event. What the organizer has written elsewhere:
 - **Modal.** Sandboxes and GPU functions. Starter plan allows 100 containers and 10 GPUs at once. Past winners ran real GPU work, large parallel fan-out, or long-lived sandboxed agents.
 - **Tinker.** LoRA fine-tuning only. gpt-oss-20b / 120b and Qwen 3.5 models. A fine-tuned model can be sampled through an OpenAI-compatible endpoint.
 
-## Ask at kickoff
+## Still to ask at kickoff
 
-1. Is code written before the event allowed? If not, we rebuild on site from `09_rebuild_guide.md`.
-2. Can one team win more than one prize? Are Track 2 teams eligible for the main prizes?
-3. Can Modal credits be pooled into one workspace?
-4. What exactly is Pacific's task, data and scoring?
-5. Pitch length and judging schedule.
+1. Can one team win a main prize and a sponsor challenge?
+2. Can Modal credits be pooled into one workspace?
+3. Where are the credit claim links and the past.dev API access?
+4. Is it fine that we rehearsed the design on Friday, given that all code is written at the event? (We will say so in the submission either way.)
