@@ -106,19 +106,39 @@ it rests on. If any planned run is unfinished the report opens with **PARTIAL RE
 arm with no finished run is marked partial. Runs written before `became_incumbent` existed show
 "n/a" there; their old follow-up rows are not counted as proposals.
 
-- **Results by arm**: runs finished of planned; final incumbent loss on select and confirm
-  (mean and range across seeds); proposals, accepted (passed the rule), became incumbent
-  (adopted); cost, minutes and evaluations per run.
-- **Time to target**: the target is a confirm loss, given with `--target` or else the median final
-  confirm loss of the arm named `fresh` (or the first arm). For each run: proposals, dollars and
-  minutes until the incumbent first reached it. Runs that never reached it are listed as
-  "not reached" (or "not reached (yet)" while running) and counted in "k of n reached", never dropped.
+- **Results by arm (equal proposals)**: runs finished of planned; final incumbent loss on select
+  and confirm (mean and range across seeds); proposals, accepted (passed the rule), became incumbent
+  (adopted); dollars and minutes per run and **per proposal**; evaluations per run.
+- **Equal proposals vs equal dollars**: "same budget" means the same number of proposals, which is
+  not the same money; a single-agent proposal costs a fraction of a swarm proposal. So the confirm
+  loss is shown on two bases side by side:
+  - **equal proposals**: the final loss after the full budget of proposals;
+  - **equal dollars**: for each run, the incumbent's loss at the last generation whose cumulative
+    cost was within the smallest total cost of any paid run in the matrix. The report states that
+    amount and the run it came from.
+
+  Arms that cost nothing (random mutation) are left out of the equal-dollars view, with a note.
+  Any statement that one arm is better must say on which basis.
+- **Time to target**: the target is fixed in advance by the protocol, not taken from the results.
+  It is a confirm loss 5% below the starting formula's: `target = seed_confirm x 0.95`, where
+  `seed_confirm` is the generation-0 confirm loss in each run's curve.
+  - The report checks that `seed_confirm` is the same in every run and prints a warning if it is not.
+  - The fraction comes from the config's `"target": {"rel": 0.05}` block (the runner ignores that
+    key), or from `--target-rel`.
+  - `--target <loss>` overrides the rule, and the report then also prints what the rule would have given.
+
+  For each run, the report gives the proposals, dollars and minutes until the incumbent first
+  reached the target. Runs that never reached it are listed as "not reached" (or "not reached
+  (yet)" while running) and counted in "k of n reached", never dropped.
 - **Search**, by arm and backend: searches made (real calls, cache hits excluded) and failed,
   claims from search, accepted, the share of accepted search claims that were not already known
-  closed-book, and accepted claims per 100 searches.
+  closed-book, and accepted claims per 100 searches. When summaries record cost per role, a second
+  table gives accepted search claims per dollar of search-role model cost. That cost is the scout
+  and judge calls, which exist only because of search.
 - **Memory**: recall calls, mean recall latency, mean characters returned.
-- **Paired comparison** (`--compare A,B`, default `warm,fresh` or the first two arms): the
-  difference in final confirm loss per seed and how many seeds each arm won. With fewer than five
+- **Paired comparison** (`--compare A,B`, default `warm,fresh` or the first two arms): per seed, A
+  minus B in confirm loss at equal proposals and, when both arms cost money, at equal dollars.
+  For each basis it counts the seeds in which each arm had the lower loss. With fewer than five
   paired seeds it says "too few seeds to test"; with five or more it gives a two-sided sign test.
   It makes no other significance claim.
 

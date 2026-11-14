@@ -129,6 +129,7 @@ def test_missing_key_arm_is_skipped_with_message(tmp_path, monkeypatch):
     assert [r.action for r in plan(cfg, tmp_path, env={"EXA_API_KEY": "x", "PAST_API_KEY": "y"})] == ["new", "new"]
     rep = rpt.build(tmp_path, "m")
     assert len(rep["skipped"]) == 2 and "PAST_API_KEY" in rpt.render(rep)
+    assert all(a["became_incumbent"] is None and a["confirm"]["mean"] is None for a in rep["arms"])  # no runs: n/a
 
 
 def test_warm_from_waits_then_carries(tmp_path, matrix_root):
@@ -274,9 +275,116 @@ def test_report_time_to_target_counts_not_reached(report_root):
     assert len(rep["time_to_target"]) == 4                       # nobody dropped
 
 
-def test_report_default_target_is_median_of_fresh(report_root):
+def test_target_is_fixed_in_advance_from_the_seed(report_root):
     rep = rpt.build(report_root, "x")
-    assert rep["target"] == pytest.approx(2.6) and "arm fresh" in rep["target_note"]
+    assert rep["target"] == pytest.approx(3.0 * 0.95) and rep["target_rel"] == 0.05
+    assert rep["seed_confirm"]["same"] and rep["seed_confirm"]["n"] == 4
+    note = rep["target_note"]
+    assert "fixed in advance" in note and "not derived from the results" in note and "all 4 run(s)" in note
+    md = rpt.render(rep)
+    assert "Target: confirm loss <= 2.8500" in md and "5% below the starting formula" in md
+    assert "median" not in note
+    assert rpt.build(report_root, "x", target_rel=0.10)["target"] == pytest.approx(2.7)
+    over = rpt.build(report_root, "x", target=2.6)
+    assert over["target"] == 2.6 and "command line" in over["target_note"] and "2.8500" in over["target_note"]
+
+
+def test_target_rel_from_config_block_and_config_file(report_root, tmp_path):
+    man_path = report_root / "x" / "manifest.json"
+    man = json.loads(man_path.read_text())
+    man["config"]["target"] = {"rel": 0.08}
+    man_path.write_text(json.dumps(man))
+    assert rpt.build(report_root, "x")["target"] == pytest.approx(3.0 * 0.92)
+    del man["config"]["target"]
+    cfg_file = tmp_path / "c.json"
+    cfg_file.write_text(json.dumps({"target": {"rel": 0.2}}))
+    man["config_path"] = str(cfg_file)
+    man_path.write_text(json.dumps(man))
+    assert rpt.build(report_root, "x")["target"] == pytest.approx(2.4)
+
+
+def test_target_warns_when_starting_losses_differ(report_root):
+    write_run(report_root, "warm", 3, curve([3.2, 2.9]))
+    rep = rpt.build(report_root, "x")
+    assert not rep["seed_confirm"]["same"] and "WARNING" in rep["target_note"] and "3.2000" in rep["target_note"]
+
+
+def test_shipped_configs_carry_the_target_rule():
+    for p in CONFIGS.glob("*.json"):
+        block = json.loads(p.read_text())["target"]
+        assert block["rel"] == 0.05 and "seed" in block["rule"]
+
+
+def cost_root(tmp_path):
+    (tmp_path / "x").mkdir()
+    (tmp_path / "x" / "manifest.json").write_text(json.dumps({"config": {
+        "name": "x", "problem": "toy", "seeds": [1, 2],
+        "arms": [{"name": "swarm"}, {"name": "single"}, {"name": "mutation"}]}, "runs": []}))
+    roles = {"scout": {"cost_usd": 0.2}, "judge": {"cost_usd": 0.05}, "engineer": {"cost_usd": 1.0}}
+    found = [dict(NEW, search_backend="openalex"), {"accepted": False, "became_incumbent": False, "origin": "search"}]
+    write_run(tmp_path, "swarm", 1, curve([3.0, 2.9, 2.6, 2.4], usd=0.5), findings=found, llm_by_role_all=roles)
+    write_run(tmp_path, "swarm", 2, curve([3.0, 2.95, 2.7, 2.5], usd=0.6), llm_by_role_all=roles)
+    write_run(tmp_path, "single", 1, curve([3.0, 2.8, 2.7, 2.65], usd=0.1))
+    write_run(tmp_path, "single", 2, curve([3.0, 2.85, 2.8, 2.75], usd=0.12))
+    write_run(tmp_path, "mutation", 1, curve([3.0, 3.0, 2.95, 2.95], usd=0.0))
+    write_run(tmp_path, "mutation", 2, curve([3.0, 3.0, 3.0, 3.0], usd=0.0))
+    return tmp_path
+
+
+def test_per_proposal_cost_and_time(tmp_path):
+    rep = rpt.build(cost_root(tmp_path), "x")
+    a = {x["arm"]: x for x in rep["arms"]}
+    # 3 generations x 2 proposals = 6 proposals; swarm seed1 costs 1.5, seed2 1.8
+    assert a["swarm"]["usd_per_proposal"]["mean"] == pytest.approx((1.5 / 6 + 1.8 / 6) / 2)
+    assert a["single"]["usd_per_proposal"]["mean"] == pytest.approx((0.3 / 6 + 0.36 / 6) / 2)
+    assert a["swarm"]["minutes_per_proposal"]["mean"] == pytest.approx(3.0 / 6)
+    md = rpt.render(rep)
+    assert "| $ per proposal |" in md and "| minutes per proposal |" in md
+
+
+def test_equal_dollars_view(tmp_path):
+    rep = rpt.build(cost_root(tmp_path), "x")
+    eq = rep["equal_dollars"]
+    assert eq["budget_usd"] == pytest.approx(0.3) and eq["from_run"] == "single seed 1"
+    assert eq["free_arms"] == ["mutation"]
+    per = {(x["arm"], x["seed"]): x for x in eq["per_run"]}
+    assert per[("single", 1)]["generation"] == 3 and per[("single", 1)]["confirm"] == 2.65    # its whole run
+    assert per[("single", 2)]["generation"] == 2 and per[("single", 2)]["confirm"] == 2.8     # 0.36 > 0.30
+    assert per[("swarm", 1)]["generation"] == 0 and per[("swarm", 1)]["confirm"] == 3.0      # 0.5 > 0.30
+    arms = {x["arm"]: x for x in eq["arms"]}
+    assert set(arms) == {"swarm", "single"} and arms["single"]["confirm"]["mean"] == pytest.approx(2.725)
+    md = rpt.render(rep)
+    assert "## Equal proposals vs equal dollars" in md and "within $0.30" in md
+    assert "confirm loss at equal dollars ($0.30)" in md and "confirm loss at equal proposals (final)" in md
+    assert "mutation costs nothing" in md and "must name its basis" in md
+
+
+def test_paired_comparison_on_both_bases(tmp_path):
+    root = cost_root(tmp_path)
+    p = rpt.build(root, "x", compare=("swarm", "single"))["paired"]
+    assert p["equal_proposals"]["a_wins"] == 2                         # swarm lower final loss
+    assert p["equal_dollars"]["b_wins"] == 2                           # single lower at $0.30
+    md = rpt.render(rpt.build(root, "x", compare=("swarm", "single")))
+    assert "At equal proposals: swarm had the lower loss in 2 seed(s)" in md
+    assert "At equal dollars ($0.30): swarm had the lower loss in 0 seed(s), single in 2" in md
+    assert "better" not in md.split("## Paired comparison")[1]
+    free = rpt.build(root, "x", compare=("swarm", "mutation"))["paired"]
+    assert free["equal_dollars"] is None and "mutation costs nothing" in free["equal_dollars_note"]
+    assert "At equal dollars: no equal-dollars basis" in rpt.render(rpt.build(root, "x", compare=("swarm", "mutation")))
+
+
+def test_search_cost_per_dollar(tmp_path):
+    rep = rpt.build(cost_root(tmp_path), "x")
+    sc = {x["arm"]: x for x in rep["search_cost"]}
+    assert set(sc) == {"swarm"}                                        # only arms whose summaries record roles
+    assert sc["swarm"]["search_role_usd"] == pytest.approx(0.5) and sc["swarm"]["accepted_from_search"] == 1
+    assert sc["swarm"]["accepted_per_usd"] == pytest.approx(2.0)
+    assert "accepted per $" in rpt.render(rep)
+
+
+def test_search_cost_left_out_without_role_costs(report_root):
+    rep = rpt.build(report_root, "x")
+    assert rep["search_cost"] == [] and "accepted per $" not in rpt.render(rep)
 
 
 def test_paired_comparison_refuses_with_two_seeds(report_root):
@@ -285,6 +393,7 @@ def test_paired_comparison_refuses_with_two_seeds(report_root):
     assert (p["a"], p["b"]) == ("warm", "fresh") and p["seeds"] == 2
     assert p["a_wins"] == 1 and p["b_wins"] == 1 and p["p_value"] is None
     assert "too few seeds to test" in p["test"] and "Too few seeds to test" in rpt.render(rep)
+    assert "At equal proposals: warm had the lower loss in 1 seed(s)" in rpt.render(rep)
 
 
 def test_paired_comparison_tests_with_five_seeds(tmp_path):

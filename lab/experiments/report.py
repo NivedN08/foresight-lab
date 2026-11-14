@@ -1,6 +1,16 @@
 """Turn a matrix's runs into the tables the pitch needs.
 
-    .venv/bin/python -m lab.experiments.report <matrix name> [--target <loss>] [--compare A,B] [--root runs/exp]
+    .venv/bin/python -m lab.experiments.report <matrix name> [--target <loss> | --target-rel 0.05] [--compare A,B]
+
+The time-to-target goal is fixed in advance by the protocol, not taken from the
+results: 5% below the starting formula's loss on the confirm window
+(target = seed_confirm * 0.95), where seed_confirm is the generation-0 confirm
+loss in every run's curve. A matrix config may carry {"target": {"rel": ...}};
+--target-rel changes the fraction and --target sets the loss directly.
+
+"Same budget" means the same number of proposals, which is not the same money,
+so arms are shown both at equal proposals (final loss) and at equal dollars
+(loss at the spend of the cheapest arm's cheapest run).
 
 Reads runs/exp/<name>/<arm>/seed<k>/summary.json and findings.jsonl, prints the
 report, and writes report.md and report.json next to the manifest. Works while the
@@ -19,6 +29,8 @@ from lab.experiments.matrix import DEFAULT_ROOT, FINISHED
 from lab.swarm.runs_index import _read_json, _read_jsonl
 
 MIN_SEEDS_FOR_TEST = 5
+DEFAULT_TARGET_REL = 0.05
+SEARCH_ROLES = ("scout", "judge")      # model calls that exist only because of search
 
 
 # ------------------------------------------------------------------ loading
@@ -107,6 +119,7 @@ def arm_table(runs: list[dict], planned: dict) -> list[dict]:
         use = fin or rs
         rows = [real_findings(r["findings"]) for r in use]
         bi = [became_incumbent_count(r["findings"]) for r in use]
+        attempted = [attempted_proposals(r) for r in use]
         out.append({
             "arm": arm, "planned": planned.get(arm, len(rs)), "finished": len(fin), "runs_seen": len(rs),
             "partial": len(fin) < len(rs) or not fin,
@@ -115,9 +128,13 @@ def arm_table(runs: list[dict], planned: dict) -> list[dict]:
             "confirm": _mean_range(r["summary"].get("incumbent", {}).get("confirm") for r in use),
             "proposals": sum(len(f) for f in rows),
             "accepted": sum(1 for f in rows for x in f if x.get("accepted")),
-            "became_incumbent": None if any(b is None for b in bi) else sum(bi),
+            "became_incumbent": None if not use or any(b is None for b in bi) else sum(bi),
             "cost_usd": _mean_range(r["summary"].get("cost_usd") for r in use),
             "minutes": _mean_range((r["summary"].get("wall_s") or 0) / 60 for r in use),
+            "usd_per_proposal": _mean_range(float(r["summary"].get("cost_usd") or 0) / n
+                                            for r, n in zip(use, attempted) if n),
+            "minutes_per_proposal": _mean_range(float(r["summary"].get("wall_s") or 0) / 60 / n
+                                                for r, n in zip(use, attempted) if n),
             "evaluations": _mean_range(r["summary"].get("evaluations") for r in use),
         })
     order = list(planned) + [a["arm"] for a in out if a["arm"] not in planned]
@@ -125,17 +142,37 @@ def arm_table(runs: list[dict], planned: dict) -> list[dict]:
     return out
 
 
-def default_target(runs: list[dict], arms: list[str]) -> tuple[float | None, str]:
-    ref = "fresh" if "fresh" in arms else (arms[0] if arms else None)
-    if ref is None:
-        return None, "no runs"
-    rs = [r for r in runs if r["arm"] == ref]
-    fin = [r for r in rs if is_finished(r)] or rs
-    vals = [r["summary"].get("incumbent", {}).get("confirm") for r in fin]
-    vals = [v for v in vals if v is not None]
+def attempted_proposals(run: dict) -> int:
+    s = run["summary"]
+    return int(s.get("generations_done") or 0) * int(s.get("proposals_per_generation") or 0)
+
+
+def seed_confirm(runs: list[dict]) -> dict:
+    """The starting formula's confirm loss (generation 0 of every run's curve)."""
+    vals = []
+    for r in runs:
+        curve = r["summary"].get("curve") or []
+        if curve and curve[0].get("generation") == 0 and curve[0].get("confirm") is not None:
+            vals.append(float(curve[0]["confirm"]))
     if not vals:
-        return None, f"arm {ref} has no confirm loss yet"
-    return float(statistics.median(vals)), f"median final confirm loss of arm {ref} ({len(vals)} run(s))"
+        return {"value": None, "same": True, "values": [], "n": 0}
+    distinct = sorted(set(round(v, 9) for v in vals))
+    return {"value": statistics.median(vals), "same": len(distinct) == 1, "values": distinct, "n": len(vals)}
+
+
+def fixed_target(runs: list[dict], rel: float) -> tuple[float | None, str, dict]:
+    sc = seed_confirm(runs)
+    if sc["value"] is None:
+        return None, "no run has a generation-0 confirm loss yet", sc
+    t = sc["value"] * (1 - rel)
+    note = (f"fixed in advance by the protocol: {rel:.0%} below the starting formula's confirm loss "
+            f"({sc['value']:.4f} x {1 - rel:.2f} = {t:.4f}), not derived from the results")
+    if sc["same"]:
+        note += f"; the starting loss is the same in all {sc['n']} run(s)"
+    else:
+        note += (f". WARNING: the starting loss differs between runs ({', '.join(f'{v:.4f}' for v in sc['values'])});"
+                 " the median is used")
+    return t, note, sc
 
 
 def time_to_target(run: dict, target: float) -> dict:
@@ -201,6 +238,62 @@ def memory_table(runs: list[dict]) -> list[dict]:
     return out
 
 
+def _confirm_at_cost(run: dict, budget_usd: float) -> dict:
+    """The incumbent's confirm loss at the last generation whose cumulative cost was within budget."""
+    best = None
+    for c in run["summary"].get("curve") or []:
+        if c.get("cost_usd") is not None and float(c["cost_usd"]) <= budget_usd + 1e-9:
+            best = c
+    if best is None:
+        return {"generation": None, "confirm": None, "usd": None, "proposals": None}
+    g = int(best.get("generation") or 0)
+    return {"generation": g, "confirm": best.get("confirm"), "usd": best.get("cost_usd"),
+            "proposals": g * int(run["summary"].get("proposals_per_generation") or 0)}
+
+
+def equal_dollars(runs: list[dict]) -> dict:
+    """Every arm at the spend of the cheapest paid run: the smallest per-run total cost among
+    the arms that cost anything. Arms whose runs cost nothing are excluded."""
+    fin = [r for r in runs if is_finished(r)] or runs
+    arms = list(dict.fromkeys(r["arm"] for r in fin))
+    cost = {a: [float(r["summary"].get("cost_usd") or 0) for r in fin if r["arm"] == a] for a in arms}
+    free = [a for a in arms if cost[a] and max(cost[a]) == 0]
+    paid = [r for r in fin if r["arm"] not in free and float(r["summary"].get("cost_usd") or 0) > 0]
+    if not paid:
+        return {"budget_usd": None, "from_run": None, "free_arms": free, "arms": [], "per_run": [],
+                "partial": fin is runs and any(not is_finished(r) for r in runs)}
+    cheapest = min(paid, key=lambda r: float(r["summary"]["cost_usd"]))
+    b = float(cheapest["summary"]["cost_usd"])
+    per_run, out = [], []
+    for a in arms:
+        if a in free:
+            continue
+        rs = [r for r in fin if r["arm"] == a]
+        at = [dict(_confirm_at_cost(r, b), arm=a, seed=r["seed"]) for r in rs]
+        per_run += at
+        out.append({"arm": a, "seeds": len(rs), "confirm": _mean_range(x["confirm"] for x in at),
+                    "generation": _mean_range(x["generation"] for x in at),
+                    "proposals": _mean_range(x["proposals"] for x in at)})
+    return {"budget_usd": b, "from_run": f"{cheapest['arm']} seed {cheapest['seed']}", "free_arms": free,
+            "arms": out, "per_run": per_run, "partial": any(not is_finished(r) for r in runs)}
+
+
+def search_cost_table(runs: list[dict]) -> list[dict]:
+    """Accepted search claims per dollar of search-role model cost (scout + judge), for arms
+    whose summaries record cost per role. Empty when none do."""
+    out = []
+    for arm in dict.fromkeys(r["arm"] for r in runs):
+        rs = [r for r in runs if r["arm"] == arm]
+        roles = [r["summary"].get("llm_by_role_all") or r["summary"].get("llm_by_role") for r in rs]
+        if not any(isinstance(x, dict) and any(k in x for k in SEARCH_ROLES) for x in roles):
+            continue
+        usd = sum(float((x or {}).get(k, {}).get("cost_usd") or 0) for x in roles for k in SEARCH_ROLES)
+        acc = sum(1 for r in rs for f in real_findings(r["findings"]) if f.get("origin") == "search" and f.get("accepted"))
+        out.append({"arm": arm, "seeds": len(rs), "search_role_usd": usd, "accepted_from_search": acc,
+                    "accepted_per_usd": acc / usd if usd > 0 else None})
+    return out
+
+
 def _sign_test_p(wins: int, n: int) -> float:
     """Two-sided exact binomial (sign) test with p = 0.5."""
     k = min(wins, n - wins)
@@ -208,27 +301,12 @@ def _sign_test_p(wins: int, n: int) -> float:
     return min(1.0, 2 * tail)
 
 
-def paired(runs: list[dict], a: str, b: str) -> dict:
-    fa = {r["seed"]: r for r in runs if r["arm"] == a and is_finished(r)}
-    fb = {r["seed"]: r for r in runs if r["arm"] == b and is_finished(r)}
-    seeds = sorted(set(fa) & set(fb))
-    rows, a_wins, b_wins, ties = [], 0, 0, 0
-    for s in seeds:
-        ca = fa[s]["summary"].get("incumbent", {}).get("confirm")
-        cb = fb[s]["summary"].get("incumbent", {}).get("confirm")
-        if ca is None or cb is None:
-            continue
-        d = ca - cb
-        rows.append({"seed": s, a: ca, b: cb, "diff": d})
-        if d < 0:
-            a_wins += 1
-        elif d > 0:
-            b_wins += 1
-        else:
-            ties += 1
-    n = len(rows)
-    out = {"a": a, "b": b, "seeds": n, "rows": rows, "a_wins": a_wins, "b_wins": b_wins, "ties": ties,
-           "mean_diff": sum(r["diff"] for r in rows) / n if n else None}
+def _verdict(diffs: list[float]) -> dict:
+    a_wins = sum(1 for d in diffs if d < 0)
+    b_wins = sum(1 for d in diffs if d > 0)
+    n = len(diffs)
+    out = {"seeds": n, "a_wins": a_wins, "b_wins": b_wins, "ties": n - a_wins - b_wins,
+           "mean_diff": sum(diffs) / n if n else None}
     if n < MIN_SEEDS_FOR_TEST:
         out["test"] = f"too few seeds to test ({n} paired seed(s); at least {MIN_SEEDS_FOR_TEST} needed)"
         out["p_value"] = None
@@ -239,10 +317,59 @@ def paired(runs: list[dict], a: str, b: str) -> dict:
     return out
 
 
+def paired(runs: list[dict], a: str, b: str, budget_usd: float | None = None, free_arms=()) -> dict:
+    """Per seed, A minus B in confirm loss, on two bases: equal proposals (final loss) and,
+    when both arms cost money, equal dollars (loss at `budget_usd`)."""
+    fa = {r["seed"]: r for r in runs if r["arm"] == a and is_finished(r)}
+    fb = {r["seed"]: r for r in runs if r["arm"] == b and is_finished(r)}
+    dollars = budget_usd is not None and a not in free_arms and b not in free_arms
+    rows = []
+    for s in sorted(set(fa) & set(fb)):
+        ca = fa[s]["summary"].get("incumbent", {}).get("confirm")
+        cb = fb[s]["summary"].get("incumbent", {}).get("confirm")
+        if ca is None or cb is None:
+            continue
+        row = {"seed": s, a: ca, b: cb, "diff": ca - cb}
+        if dollars:
+            da = _confirm_at_cost(fa[s], budget_usd)["confirm"]
+            db = _confirm_at_cost(fb[s], budget_usd)["confirm"]
+            row.update({f"{a}_at_usd": da, f"{b}_at_usd": db,
+                        "diff_at_usd": (da - db) if da is not None and db is not None else None})
+        rows.append(row)
+    out = {"a": a, "b": b, "seeds": len(rows), "rows": rows,
+           "equal_proposals": _verdict([r["diff"] for r in rows])}
+    out["equal_dollars"] = _verdict([r["diff_at_usd"] for r in rows if r.get("diff_at_usd") is not None]) \
+        if dollars else None
+    out["equal_dollars_note"] = None if dollars else (
+        "no equal-dollars basis: " + (f"{a if a in free_arms else b} costs nothing" if budget_usd is not None
+                                      else "no run has cost anything yet"))
+    # kept for older readers of report.json
+    out.update({k: out["equal_proposals"][k] for k in ("a_wins", "b_wins", "ties", "mean_diff", "test", "p_value")})
+    return out
+
+
 # ------------------------------------------------------------------ the report
 
 
-def build(root, name: str, target: float | None = None, compare: tuple[str, str] | None = None) -> dict:
+def target_rel_from(manifest: dict) -> float:
+    """The fraction from the matrix config's "target" block (in the manifest, else the config file)."""
+    cfg = manifest.get("config") or {}
+    block = cfg.get("target")
+    if block is None and manifest.get("config_path"):
+        from lab.experiments.matrix import PROJECT_ROOT
+        p = Path(manifest["config_path"])
+        p = p if p.is_absolute() else PROJECT_ROOT / p
+        try:
+            block = json.loads(p.read_text()).get("target")
+        except (OSError, ValueError):
+            block = None
+    if isinstance(block, dict) and block.get("rel") is not None:
+        return float(block["rel"])
+    return DEFAULT_TARGET_REL
+
+
+def build(root, name: str, target: float | None = None, compare: tuple[str, str] | None = None,
+          target_rel: float | None = None) -> dict:
     manifest, runs = load_runs(Path(root), name)
     cfg = manifest.get("config") or {}
     seeds = cfg.get("seeds") or sorted({r["seed"] for r in runs})
@@ -254,27 +381,34 @@ def build(root, name: str, target: float | None = None, compare: tuple[str, str]
         planned[r["arm"]] = planned.get(r["arm"], len(seeds)) - (1 if r.get("status") == "skipped" else 0)
     arms = arm_table(runs, planned)
     arm_names = [a["arm"] for a in arms]
-    target_note = "given on the command line"
-    if target is None:
-        target, target_note = default_target(runs, arm_names)
+    rel = target_rel if target_rel is not None else target_rel_from(manifest)
+    t_fixed, rule_note, sc = fixed_target(runs, rel)
+    if target is not None:
+        target_note = (f"set on the command line; the protocol's fixed rule would give "
+                       + (f"{t_fixed:.4f}" if t_fixed is not None else "n/a"))
+    else:
+        target, target_note = t_fixed, rule_note
     ttt = []
     if target is not None:
         for r in runs:
             t = time_to_target(r, target)
             ttt.append({"arm": r["arm"], "seed": r["seed"], "status": r["summary"].get("status"), **t})
+    eq = equal_dollars(runs)
     if compare is None:
         if "warm" in arm_names and "fresh" in arm_names:
             compare = ("warm", "fresh")
         elif len(arm_names) >= 2:
             compare = (arm_names[0], arm_names[1])
-    pair = paired(runs, *compare) if compare else None
+    pair = paired(runs, *compare, budget_usd=eq["budget_usd"], free_arms=eq["free_arms"]) if compare else None
     finished = sum(1 for r in runs if is_finished(r))
     return {"matrix": name, "problem": cfg.get("problem"), "planned_runs": sum(planned.values()),
             "runs_seen": len(runs), "runs_finished": finished,
             "partial": finished < sum(planned.values()) or any(not is_finished(r) for r in runs),
             "skipped": [{k: r.get(k) for k in ("arm", "seed", "status", "message")} for r in skipped],
-            "arms": arms, "target": target, "target_note": target_note, "time_to_target": ttt,
-            "search": search_table(runs), "memory": memory_table(runs), "paired": pair}
+            "arms": arms, "target": target, "target_rel": rel, "target_note": target_note,
+            "seed_confirm": sc, "time_to_target": ttt, "equal_dollars": eq,
+            "search": search_table(runs), "search_cost": search_cost_table(runs),
+            "memory": memory_table(runs), "paired": pair}
 
 
 def render(rep: dict) -> str:
@@ -289,24 +423,53 @@ def render(rep: dict) -> str:
     if rep["skipped"]:
         L.append("")
 
-    L += ["## Results by arm", "",
-          "Final incumbent loss: mean across seeds (range). Unfinished runs are used only when an arm has "
-          "no finished run, and the row is marked partial.", ""]
+    L += ["## Results by arm (equal proposals)", "",
+          "Every arm had the same number of proposals per run; that is not the same money (see the "
+          "equal-dollars view below). Final incumbent loss: mean across seeds (range). Unfinished runs are "
+          "used only when an arm has no finished run, and the row is marked partial.", ""]
     rows = []
     for a in rep["arms"]:
         rows.append([a["arm"] + (" (partial)" if a["partial"] else ""), f"{a['finished']} of {a['planned']}",
                      len(a["seeds"]), _mr(a["select"]), _mr(a["confirm"]), a["proposals"], a["accepted"],
-                     _fmt(a["became_incumbent"]), _mr(a["cost_usd"], 2), _mr(a["minutes"], 1),
-                     _mr(a["evaluations"], 0)])
+                     _fmt(a["became_incumbent"]), _mr(a["cost_usd"], 2), _mr(a["usd_per_proposal"], 3),
+                     _mr(a["minutes"], 1), _mr(a["minutes_per_proposal"], 2), _mr(a["evaluations"], 0)])
     L += [_table(["arm", "finished", "seeds", "select loss", "confirm loss", "proposals", "accepted",
-                  "became incumbent", "cost $ per run", "minutes per run", "evaluations per run"], rows), ""]
+                  "became incumbent", "$ per run", "$ per proposal", "minutes per run", "minutes per proposal",
+                  "evaluations per run"], rows), ""]
+
+    eq = rep["equal_dollars"]
+    L += ["## Equal proposals vs equal dollars", ""]
+    if eq["budget_usd"] is None:
+        L += ["No run has cost anything yet, so there is no equal-dollars view.", ""]
+    else:
+        L += [f"Confirm loss of the incumbent on two bases. **Equal proposals**: the final loss after the full "
+              f"budget of proposals. **Equal dollars**: the loss at the last generation whose cumulative cost was "
+              f"within ${eq['budget_usd']:.2f}, the smallest total cost of any paid run (from {eq['from_run']}), so "
+              "every arm is compared at the spend of the cheapest one."
+              + (" Based on finished runs only." if not eq["partial"] else " PARTIAL: some runs are unfinished."), ""]
+        by_arm = {a["arm"]: a for a in rep["arms"]}
+        rows = []
+        for e in eq["arms"]:
+            a = by_arm.get(e["arm"], {})
+            rows.append([e["arm"], e["seeds"], _mr(a.get("confirm", {"mean": None})),
+                         _mr(e["confirm"]), _mr(e["proposals"], 1), _mr(e["generation"], 1)])
+        L += [_table(["arm", "seeds", "confirm loss at equal proposals (final)",
+                      f"confirm loss at equal dollars (${eq['budget_usd']:.2f})",
+                      "proposals made within that spend", "generation reached"], rows), ""]
+        for a in eq["free_arms"]:
+            L.append(f"- {a} costs nothing (no model calls), so it is left out of the equal-dollars view; "
+                     "compare it at equal proposals only.")
+        if eq["free_arms"]:
+            L.append("")
+        L += ["Neither basis alone says which arm is better; a statement about an arm must name its basis.", ""]
 
     L += ["## Time to target", ""]
     if rep["target"] is None:
         L += [f"No target: {rep['target_note']}.", ""]
     else:
-        L += [f"Target: confirm loss <= {rep['target']:.4f} ({rep['target_note']}). Proposals, dollars and "
-              "minutes until the incumbent first reached it. Runs that never reached it are listed, not dropped.", ""]
+        L += [f"Target: confirm loss <= {rep['target']:.4f}. Rule: {rep['target_note']}.", "",
+              "Proposals, dollars and minutes until the incumbent first reached it. Runs that never reached it "
+              "are listed, not dropped.", ""]
         rows = []
         for arm in [a["arm"] for a in rep["arms"]]:
             ts = [t for t in rep["time_to_target"] if t["arm"] == arm]
@@ -336,6 +499,12 @@ def render(rep: dict) -> str:
     else:
         L += ["No searches in this matrix.", ""]
 
+    if rep.get("search_cost"):
+        rows = [[c["arm"], c["seeds"], _fmt(c["search_role_usd"], 2), c["accepted_from_search"],
+                 _fmt(c["accepted_per_usd"], 2)] for c in rep["search_cost"]]
+        L += ["Search-role model cost (scout and judge calls, which exist only because of search):", "",
+              _table(["arm", "seeds", "search-role $", "accepted from search", "accepted per $"], rows), ""]
+
     L += ["## Memory", ""]
     rows = [[m["arm"], m["memory"], m["seeds"], m["recall_calls"], _fmt(m["mean_latency_ms"], 1),
              _fmt(m["mean_chars"], 0)] for m in rep["memory"]]
@@ -344,13 +513,32 @@ def render(rep: dict) -> str:
     p = rep["paired"]
     if p:
         L += [f"## Paired comparison: {p['a']} vs {p['b']}", "",
-              f"Final confirm loss per seed, finished runs only; difference = {p['a']} minus {p['b']} "
-              f"(negative: {p['a']} better). Rests on {p['seeds']} seed(s).", ""]
-        rows = [[r["seed"], _fmt(r[p["a"]], 4), _fmt(r[p["b"]], 4), _fmt(r["diff"], 4)] for r in p["rows"]]
+              f"Confirm loss per seed, finished runs only; difference = {p['a']} minus {p['b']} (negative: "
+              f"{p['a']} has the lower loss on that basis). Rests on {p['seeds']} seed(s).", ""]
+        dollars = p.get("equal_dollars") is not None
+        eq = rep["equal_dollars"]
+        heads = ["seed", f"{p['a']} (equal proposals)", f"{p['b']} (equal proposals)", "difference"]
+        if dollars:
+            heads += [f"{p['a']} (equal dollars)", f"{p['b']} (equal dollars)", "difference"]
+        rows = []
+        for r in p["rows"]:
+            row = [r["seed"], _fmt(r[p["a"]], 4), _fmt(r[p["b"]], 4), _fmt(r["diff"], 4)]
+            if dollars:
+                row += [_fmt(r.get(f"{p['a']}_at_usd"), 4), _fmt(r.get(f"{p['b']}_at_usd"), 4),
+                        _fmt(r.get("diff_at_usd"), 4)]
+            rows.append(row)
         if rows:
-            L += [_table(["seed", p["a"], p["b"], "difference"], rows), ""]
-        L += [f"{p['a']} won {p['a_wins']}, {p['b']} won {p['b_wins']}, ties {p['ties']}; "
-              f"mean difference {_fmt(p['mean_diff'], 4)}. {p['test'][0].upper() + p['test'][1:]}.", ""]
+            L += [_table(heads, rows), ""]
+        bases = [("At equal proposals", p["equal_proposals"])]
+        if dollars:
+            bases.append((f"At equal dollars (${eq['budget_usd']:.2f})", p["equal_dollars"]))
+        for label, v in bases:
+            L.append(f"- {label}: {p['a']} had the lower loss in {v['a_wins']} seed(s), {p['b']} in {v['b_wins']}, "
+                     f"ties {v['ties']}; mean difference {_fmt(v['mean_diff'], 4)}. "
+                     f"{v['test'][0].upper() + v['test'][1:]}.")
+        if not dollars and p.get("equal_dollars_note"):
+            L.append(f"- At equal dollars: {p['equal_dollars_note']}.")
+        L.append("")
     return "\n".join(L)
 
 
@@ -366,12 +554,16 @@ def write(root, name: str, rep: dict) -> tuple[Path, Path]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Tables for a matrix of lab runs.")
     ap.add_argument("matrix")
-    ap.add_argument("--target", type=float, default=None, help="confirm-window loss to reach")
+    ap.add_argument("--target", type=float, default=None,
+                    help="confirm-window loss to reach (overrides the fixed rule)")
+    ap.add_argument("--target-rel", type=float, default=None,
+                    help=f"fraction below the starting formula's confirm loss (default {DEFAULT_TARGET_REL}, "
+                         "or the config's target.rel)")
     ap.add_argument("--compare", default=None, help="two arm names, A,B (default warm,fresh or the first two)")
     ap.add_argument("--root", default=str(DEFAULT_ROOT))
     args = ap.parse_args(argv)
     cmp_ = tuple(x.strip() for x in args.compare.split(","))[:2] if args.compare else None
-    rep = build(args.root, args.matrix, args.target, cmp_)
+    rep = build(args.root, args.matrix, args.target, cmp_, target_rel=args.target_rel)
     print(render(rep))
     md, js = write(args.root, args.matrix, rep)
     print(f"\nwritten: {md} and {js}")

@@ -7,6 +7,11 @@
   "proposals": 4,
   "max_cost_usd": 5.0
  },
+ "target": {
+  "rule": "time to target: confirm loss at or below (1 - rel) x the starting formula's (seed's) generation-0 confirm loss",
+  "rel": 0.05,
+  "comment": "Fixed before any result, by the experiment protocol. Read only by lab.experiments.report; the runner ignores this key."
+ },
  "seeds": [
   1,
   2
