@@ -33,11 +33,11 @@ def load_problem(name: str):
     return getattr(importlib.import_module(module), cls)()
 
 
-def build_evaluator(problem, workers: int):
+def build_evaluator(problem, workers: int, evaluator: str = "local"):
     from lab.evalpool.evaluate import compare
-    from lab.evalpool.pool import EvalPool
+    from lab.evalpool.registry import make_pool
     splits = problem.splits()
-    return EvalPool(problem, splits, max_workers=workers), compare, splits
+    return make_pool(problem, splits, evaluator, workers=workers), compare, splits
 
 
 def main(argv=None) -> int:
@@ -61,6 +61,8 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--max-cost", type=float, default=None, help="stop cleanly once this many USD are spent")
     ap.add_argument("--workers", type=int, default=4, help="evaluation worker processes")
+    ap.add_argument("--evaluator", default="local", choices=["local", "modal"],
+                    help="where candidates run: this machine, or Modal (docs/modal.md)")
     ap.add_argument("--warm-from", default=None, help="earlier run directory: its findings and playbook")
     ap.add_argument("--start-source", default=None, help="file with the starting candidate")
     ap.add_argument("--run-dir", default=None)
@@ -72,7 +74,7 @@ def main(argv=None) -> int:
     if args.resume:
         cfg = json.loads((Path(args.resume) / "config.json").read_text())
         problem = load_problem(cfg["problem"])
-        pool, compare, splits = build_evaluator(problem, args.workers)
+        pool, compare, splits = build_evaluator(problem, args.workers, args.evaluator)
         summary = run_lab(problem, pool, compare, llm_backend=cfg.get("llm_backend") or args.llm,
                           mode=cfg.get("mode", "swarm"),
                           search_fallback=cfg["search_chain"][1:] if "search_chain" in cfg else None,
@@ -85,7 +87,7 @@ def main(argv=None) -> int:
         return 0
 
     problem = load_problem(args.problem)
-    pool, compare, splits = build_evaluator(problem, args.workers)
+    pool, compare, splits = build_evaluator(problem, args.workers, args.evaluator)
     models = {}
     if args.analyst_model:
         models.update(analyst=args.analyst_model, closed_book=args.analyst_model, scout=args.analyst_model,

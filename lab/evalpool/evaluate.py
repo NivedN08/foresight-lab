@@ -95,18 +95,27 @@ def evaluate(problem, source: str, splits: Splits, windows=EVAL_WINDOWS, *, time
     out = EvalResult(ok=res.ok, error=res.error, lint=list(res.lint), duration_s=0.0,
                      protections=list(res.protections), source_hash=h, name=res.name, windows=windows)
     if res.ok:
-        preds = res.predictions
-        pos = 0
-        for w in windows:
-            win = getattr(splits, w)
-            p = preds[pos:pos + len(win)]
-            pos += len(win)
-            loss = np.asarray(problem.losses(p, win.truths), dtype=float)
-            s = dict(problem.summarize(win.cases, p, win.truths))
-            s["mean_loss"] = float(np.nanmean(loss)) if np.isfinite(loss).any() else float("nan")
-            out.losses[w] = loss
-            out.summary[w] = s
+        score_predictions(problem, splits, windows, res.predictions, out)
     out.duration_s = time.monotonic() - t0
+    return out
+
+
+def score_predictions(problem, splits: Splits, windows: tuple[str, ...], preds: list[dict],
+                      out: EvalResult) -> EvalResult:
+    """Fill `out.losses` and `out.summary` from predictions ordered window by window,
+    using the truths held here (the parent). Shared by every evaluator backend."""
+    pos = 0
+    for w in windows:
+        win = getattr(splits, w)
+        p = preds[pos:pos + len(win)]
+        pos += len(win)
+        loss = np.asarray(problem.losses(p, win.truths), dtype=float)
+        s = dict(problem.summarize(win.cases, p, win.truths))
+        s["mean_loss"] = float(np.nanmean(loss)) if np.isfinite(loss).any() else float("nan")
+        out.losses[w] = loss
+        out.summary[w] = s
+    if pos != len(preds):
+        raise ValueError(f"{len(preds)} predictions for {pos} cases")
     return out
 
 
