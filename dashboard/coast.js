@@ -897,12 +897,17 @@ export function create(root, api) {
     const hl = (m) => m === shown;
     const leads = block.leads_h || LEADS;
     let cell;
+    let pairedText = "";
     if (ui.boardMode === "live") {
       const sb = block.scoreboard || {};
       cell = (m, l) => { const c = sb[m] && sb[m][String(l)]; return c ? { v: c.mae_cm, n: c.graded } : null; };
       const any = Object.keys(sb).length > 0;
+      pairedText = water ? pairedSentence(shown, ui.lead) : "";
       note.textContent = any
-        ? "Mean error in cm of sealed forecasts graded so far, all stations. Small figures count them."
+        ? "Mean error in cm of sealed forecasts graded so far, all stations. Small figures count them. " +
+          (pairedText
+            ? "Columns with fewer forecasts cover fewer hours, so compare them with the sentence below, not across the row."
+            : "Columns with fewer forecasts cover fewer hours, so do not compare them across the row.")
         : `Nothing graded yet. ${firstGradeText()}`;
     } else {
       const bt = water ? block.backtest : state.backtest_waves;
@@ -925,8 +930,9 @@ export function create(root, api) {
     }
     table.innerHTML = html + "</tbody>";
 
+    // live: the lab forecaster against the best hand-written model on identical forecasts
     // backtest: the paired comparison for the selected lead, and the caveat
-    foot.textContent = "";
+    foot.textContent = pairedText;
     if (ui.boardMode === "backtest") {
       const bt = water ? block.backtest : state.backtest_waves;
       const other = water ? "Persistence" : "WaveModel";
@@ -941,6 +947,22 @@ export function create(root, api) {
       }
       foot.textContent = t + (bt && bt.note ? bt.note : "");
     }
+  }
+
+  // One sentence from water.scoreboard_paired for a promoted lab forecaster at one lead, or "".
+  function pairedSentence(model, lead) {
+    const sp = state && state.water && state.water.scoreboard_paired;
+    const r = sp && sp[model] && sp[model][String(lead)];
+    const v = r && r.vs_best;
+    if (!r || !v || !r.n) return "";
+    const cm = (x) => x.toFixed(2).replace("-", "−");
+    const signed = (x) => (x > 0 ? "+" : "") + cm(x);
+    const interval = v.too_few_blocks || v.low == null || v.high == null
+      ? "too few station-days for an interval yet"
+      : `95% interval ${signed(v.low)} to ${signed(v.high)}`;
+    return `On the ${fmtInt(r.n)} forecasts that it and every hand-written model made, at ${lead} h ahead: ` +
+      `${modelLabel(model)} ${cm(v.lab_mae_cm)} cm, best hand-written model (${modelLabel(v.model)}) ${cm(v.best_mae_cm)} cm; ` +
+      `difference ${signed(v.diff_cm)} cm (${interval}).`;
   }
 
   function renderSide() {

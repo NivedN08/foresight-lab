@@ -62,7 +62,8 @@ model, at most one per target hour. Errors are absolute errors in **cm**.
 | `fit` | `fitted_at`, `train_cases`, `train_from`: the models are refitted every hour on cases whose target time is before now |
 | `promoted` | forecasters written by the research lab and promoted into this job (below); their forecasts appear under each station's `forecasts` and in `scoreboard` with the model name `Lab:<name>` |
 | `stations` | one entry per tide gauge (below) |
-| `scoreboard` | live results from graded sealed forecasts: `scoreboard[model][lead] = {"graded": n, "mae_cm": x}`; empty until the first forecasts come due |
+| `scoreboard` | live results from graded sealed forecasts: `scoreboard[model][lead] = {"graded": n, "mae_cm": x}`; empty until the first forecasts come due. Each model is averaged over its own forecasts, and the promoted lab forecasters started hours after the others, so the columns cover different hours and must not be compared across a row; use `scoreboard_paired` for that |
+| `scoreboard_paired` | each promoted lab forecaster against the other models on identical forecasts (below); `{}` when nothing is promoted |
 | `forecast_window` | `from` / `to`: sealed forecasts with target times in this window are listed under each station |
 | `stale` | due forecasts whose gauge has not reported for more than 6 hours after the target: `{seq, station, model, target_time}`; they stay ungraded |
 | `backtest` | copy of `runs/coast/backtest.json`: `table[model][lead] = {mae_cm, low, high, n}` (95% bootstrap interval), `paired_seed_vs[Persistence or DampedPersistence][lead] = {seed_mae, other_mae, diff_cm, low, high, p_seed_better, n}` (negative `diff_cm` means SeedPhysics has the lower error), `days`, `unit`, `note`. The intervals resample single cases; neighbouring hours and stations are correlated, so they are narrower than they should be. Since 2026-11-13 the backtest's weather inputs come from the Open-Meteo Previous Runs archive (a run published before each issue time); the older stitched "hindsight" weather leaked the future and is kept only as `runs/coast/backtest_hindsight.json` |
@@ -84,7 +85,31 @@ other model's. If it fails or times out, nothing is sealed for it that hour and 
 | `run_id`, `generation` | the lab run it came from and the generation at which it became that run's incumbent |
 | `select_loss`, `confirm_loss` | mean absolute error (cm) on the lab's select and confirm windows when it was promoted |
 | `promoted_at` | when it was promoted |
-| `status` | the last hourly run: `last_run`, `seconds`, `ok`, `error` (or `null`), `sealed` (forecasts sealed); `null` before the first run |
+| `status` | the last hourly run: `last_run`, `seconds`, `ok`, `error` (or `null`), `sealed` (forecasts sealed), `protections` (below); `null` before the first run |
+
+`status.protections` lists the sandbox layers that were active for that run, copied from the sandbox
+result (`SandboxResult.protections`, see `docs/sandbox.md`): `lint`, `isolated_interpreter`,
+`restricted_builtins`, `wall_clock_kill`, `rss_watchdog`, the `rlimit_*` limits this machine accepts,
+and on macOS `sandbox_exec_no_network`, `sandbox_exec_no_file_write`, `sandbox_exec_read_allowlist`.
+It is filled for failed runs too (a run that fails the lint lists only `lint`). It is an empty list
+when no sandbox result came back, that is when the executor itself raised, or when the remote
+(Modal) evaluator reports a crash.
+
+### `water.scoreboard_paired`
+
+`scoreboard_paired[lab_model][lead]`, one entry per promoted forecaster (`Lab:<name>`) and lead. A *case*
+is one station, issue time (`issued_at`) and lead. Only the cases for which this forecaster and **every** hand-written model
+in `water.models` have a graded forecast are kept, so every mean in one entry is over exactly the same
+forecasts. Other promoted forecasters are not required and do not appear in the entry. Forecasts with a different issue time are not paired:
+when a promoted forecaster runs later in the hour than the others sealed that target hour, its
+forecast is left out. Leads with no shared case are left out; a forecaster with none at all has `{}`.
+
+| field | meaning |
+|---|---|
+| `n` | shared cases |
+| `blocks` | distinct station-days among them (station + UTC date of the target time) |
+| `mae_cm` | `{model: mean absolute error in cm}` over those cases, for this forecaster and every hand-written model |
+| `vs_best` | the lab forecaster against the best hand-written model on those cases (`null` if there is none): `model` (the non-lab model with the lowest mean error there), `lab_mae_cm`, `best_mae_cm`, `diff_cm` (lab minus best; negative means the lab forecaster has the lower error), `too_few_blocks`, and, only when `too_few_blocks` is `false`, `low` / `high`: a 95% interval for `diff_cm` from `lab.core.stats.paired_block_bootstrap`, which resamples whole station-days. With fewer than 5 station-days `too_few_blocks` is `true` and there is no interval |
 
 ### `water.stations[]`
 

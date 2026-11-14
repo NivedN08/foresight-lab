@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from lab.core.ledger import SealedLedger
+from lab.core.stats import paired_block_bootstrap
 from lab.core.timeutil import from_iso, to_iso, utcnow
 
 from . import sources as S
@@ -41,6 +42,10 @@ MAX_STATE_BYTES = 1_900_000
 # inputs; live cases use the newest forecast. See water.py.
 FIT_WEATHER = "runs"
 LIVE_WEATHER = "latest"
+# Promoted lab forecasters are sealed under "Lab:<name>" (promote.MODEL_PREFIX).
+LAB_PREFIX = "Lab:"
+# The paired scoreboard gives a 95% interval only from this many station-days on.
+MIN_PAIRED_BLOCKS = 5
 
 
 def floor6(t: datetime) -> datetime:
@@ -204,6 +209,63 @@ def _scoreboard(joined: list[dict], task: str, err_key: str) -> dict:
             for m, leads in acc.items()}
 
 
+def _paired_scoreboard(joined: list[dict], task: str, models: list[str], err_key: str = "abs_error_cm",
+                       min_blocks: int = MIN_PAIRED_BLOCKS) -> dict:
+    """Lab forecasters against every other model on identical cases.
+
+    A case is (station, issued_at, lead). For each `Lab:` model in `models` and
+    each lead, only the cases that this lab model AND every non-lab model have a
+    graded forecast for are kept, so all means are over the same cases. Other
+    lab models are not required (a newly promoted one would otherwise empty the
+    table) and are not in that row's `mae_cm`. The lab model is then
+    compared with the best non-lab model on those cases (lowest mean error), with
+    a 95% interval that resamples whole station-days (station + UTC date of the
+    target time). Below `min_blocks` station-days no interval is given.
+
+        {lab_model: {lead: {"n", "blocks", "mae_cm": {model: x},
+                            "vs_best": {"model", "lab_mae_cm", "best_mae_cm", "diff_cm",
+                                        "too_few_blocks", ["low", "high"]} or None}}}
+
+    `diff_cm` is lab minus best: negative means the lab model has the lower error.
+    Leads with no shared cases are left out.
+    """
+    wanted = set(models)
+    errs: dict[tuple, dict[str, float]] = defaultdict(dict)
+    block_of: dict[tuple, str] = {}
+    for r in joined:
+        if r["task"] != task or not r["grade"] or r["model"] not in wanted:
+            continue
+        key = (r["meta"].get("station"), r["issued_at"], int(r["meta"]["lead_h"]))
+        errs[key].setdefault(r["model"], float(r["grade"]["truth"][err_key]))   # first graded record wins
+        block_of.setdefault(key, f"{key[0]}|{from_iso(r['target_time']).date().isoformat()}")
+    labs = [m for m in models if m.startswith(LAB_PREFIX)]
+    others = [m for m in models if not m.startswith(LAB_PREFIX)]
+    out: dict = {}
+    for lab in labs:
+        out[lab] = {}
+        row_models = others + [lab]
+        complete = sorted((k for k, v in errs.items() if all(m in v for m in row_models)),
+                          key=lambda k: (k[2], k[1], str(k[0])))
+        for lead in sorted({k[2] for k in complete}):
+            cases = [k for k in complete if k[2] == lead]
+            blocks = [block_of[k] for k in cases]
+            e = {m: np.array([errs[k][m] for k in cases]) for m in row_models}
+            mae = {m: float(v.mean()) for m, v in e.items()}
+            row = {"n": len(cases), "blocks": len(set(blocks)),
+                   "mae_cm": {m: round(v, 3) for m, v in mae.items()}, "vs_best": None}
+            if others:
+                best = min(others, key=lambda m: (mae[m], others.index(m)))
+                vs = {"model": best, "lab_mae_cm": round(mae[lab], 3), "best_mae_cm": round(mae[best], 3),
+                      "diff_cm": round(float((e[lab] - e[best]).mean()), 3),
+                      "too_few_blocks": row["blocks"] < min_blocks}
+                if not vs["too_few_blocks"]:
+                    pr = paired_block_bootstrap(e[lab], e[best], blocks)
+                    vs["low"], vs["high"] = round(pr.diff.low, 3), round(pr.diff.high, 3)
+                row["vs_best"] = vs
+            out[lab][str(lead)] = row
+    return out
+
+
 def build_state(now: datetime, ledger: SealedLedger, wc: WaterCycle, stale: list[dict],
                 alerts: list[dict], cycle_info: dict, waves: dict | None = None, past_hours: int = 24) -> dict:
     ok, n_checked, msg = ledger.verify()
@@ -261,6 +323,7 @@ def build_state(now: datetime, ledger: SealedLedger, wc: WaterCycle, stale: list
         backtest_waves = {"generated_at": b.get("generated_at"), "days": b.get("days"), "unit": b.get("unit"),
                           "table": b.get("table"), "paired_seed_vs": b.get("paired_seed_vs"),
                           "note": b.get("note")}
+    models = [m.name for m in (wc.models or [])] + [p.model for p in (wc.promoted.promoted if wc.promoted else [])]
     state = {
         "generated_at": to_iso(now),
         "ledger": {"path": str(ledger.dir.relative_to(ROOT)) if ledger.dir.is_relative_to(ROOT) else str(ledger.dir),
@@ -270,11 +333,12 @@ def build_state(now: datetime, ledger: SealedLedger, wc: WaterCycle, stale: list
         "water": {
             "quantity": "water level above the tide table (residual), metres; errors in cm",
             "leads_h": list(LEADS),
-            "models": [m.name for m in (wc.models or [])] + [p.model for p in (wc.promoted.promoted if wc.promoted else [])],
+            "models": models,
             "promoted": wc.promoted.state() if wc.promoted else [],
             "fit": wc.fit_info,
             "stations": stations,
             "scoreboard": _scoreboard(joined, TASK, "abs_error_cm"),
+            "scoreboard_paired": _paired_scoreboard(joined, TASK, models),
             "forecast_window": {"from": to_iso(lo), "to": to_iso(hi)},
             "stale": stale,
             "backtest": backtest,
