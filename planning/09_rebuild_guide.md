@@ -23,16 +23,17 @@ Each block lists what it is, the tests that prove it, and the traps we already h
 | 11 | Experiment runner, report, one-time test scorer | 1.5 h | Nived | The tables |
 | 12 | Modal: sandboxed evaluations and the scheduled sealing job | 1–2 h | whoever is free | Modal prize |
 
-Blocks 1, 2, 3, 5 and 8 start at once, in parallel. Block 3 is the long pole and block 4 has a deadline: the first forecasts must be sealed by about 15:00 Saturday so that 24-hour forecasts are graded before Sunday's submission.
+Blocks 1, 2, 3 and 5 start at once, in parallel. Block 3 is the long pole, and sealing has a deadline that changes its order: build the gauge client, the residual and the two simple rules first, and seal those by 12:00 Saturday with a first version of block 4. A 24-hour forecast sealed at noon is graded at noon Sunday; one sealed after about 14:00 is not graded before submissions close at 14:30. The weather inputs, the full case list and the starting formula follow in the afternoon.
 
 **Not rebuilt:** the turbulence application, the generic time-series adapter, the three-role pipeline, the transfer experiment. The rehearsal showed the first is a second demo we cannot afford, the second belongs to another track, and the last two did not work.
 
 ## What Friday's rehearsal measured (so we do not rediscover it)
 
-- One strong model per proposal plus a strict judge did the work: 19% below the hand-written formula on a window it never saw (3.17 against 3.92 cm; best simple rule 4.45; tide table 32.7).
+- One strong model per proposal plus a strict judge did the work. On a window the lab never saw, the best of 35 runs was 19% below the hand-written formula (3.17 against 3.92 cm; best simple rule 4.45; tide table 32.7). Two forecasters not picked that way were 12 to 13% below it: expect that from a typical run.
 - A three-role pipeline (analyst, scout, engineer) was worse and cost twice as much. Random code changes never passed.
 - The notebook, free scholarly search, and carrying a notebook to a second problem showed no measurable effect. Whether Exa or past.dev do is the open question the event runs answer; report it either way.
-- The same arm with the same seed moved by 0.1 to 0.4 cm between two runs. Two seeds say nothing. Use five, and compare arms seed by seed.
+- The same setup with the same seed moved by 0.1 to 0.55 cm between runs. Two seeds say nothing. Use five, and compare arms seed by seed.
+- On live forecasts in a storm the lab's forecaster was level with "the gap continues" at one hour and worse at three. Find out why early: look at what its extra terms do when the residual is far outside the training range.
 - A run of 24 proposals takes about four minutes and about one dollar of model use. The whole ladder (23 runs) took about an hour and a half on one laptop.
 
 ## 1. Sealed ledger
@@ -87,6 +88,7 @@ Traps:
 - **Future weather in the backtest.** Past values from a forecast API are near-final values, not forecasts. Using them made the 24-hour error look like 3.7 cm when the honest figure is 4.0 cm (and 5.1 cm with no weather at all). Use forecasts from runs that existed at the issue time; for a 24-hour lead that means a run at least two days old.
 - **A split by time needs a gap.** The last training target must be earlier than the first selection issue time.
 - **Backtests need a fixed end time** (`--until`), or two runs differ.
+- **Keep people off the test period too.** On Friday our first rewind tests scored the starting formula on dates that later became the test window, and its weather inputs were fixed after seeing them. Cut the four windows first; run every exploratory rewind test on train and select only.
 
 Tests: parsers on saved samples; residual arithmetic; a leak test that corrupts everything after the issue time and shows the inputs do not change; coefficients recovered on synthetic data.
 

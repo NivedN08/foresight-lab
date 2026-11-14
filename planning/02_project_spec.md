@@ -47,12 +47,12 @@ This lab removes both excuses. It tests ideas from the literature against measur
 | Problem interface | `lab/core/problem.py` | Four time-ordered windows (train, select, confirm, test), per-case loss, blocks for honest statistics |
 | Coast | `lab/tasks/coast/` | Tide gauges, buoys, weather forecasts; water-level and wave problems; live job |
 | Turbulence | `lab/tasks/turb/` | Pilot reports, upper-air fields, turbulence indices; live job |
-| Any time series | `lab/tasks/series/` | A CSV in, a problem out; for the track task |
+| Any time series | `lab/tasks/series/` | A CSV in, a problem out (rehearsal only; not part of the Track 1 build) |
 | Sandbox | `lab/sandbox/` | Runs agent-written code with no network, no files, no truths |
 | Evaluator | `lab/evalpool/` | Fits and scores candidates; paired block statistics |
 | Research loop | `lab/swarm/` | Proposal modes (researcher, single agent, the older three-role pipeline, random mutation), decision rule, logging, warm starts |
 | Notebook | `lab/memory/` | none, full context, vector store, past.dev |
-| Search | `lab/search/` | OpenAlex, arXiv, Exa |
+| Search | `lab/search/` | OpenAlex, Crossref, arXiv, Exa |
 | Model backends | `lab/llm/` | Claude command-line tool (no key), OpenAI-compatible, Anthropic |
 | Dashboard | `dashboard/`, `lab/server.py` | Live view of sealed versus measured |
 
@@ -76,7 +76,7 @@ A single readable Python file: a class with `fit` (estimate coefficients from pa
 
 All numbers come from commands in the repo; the tables and their caveats are in `docs/experiments.md`.
 
-**The test window, scored once (Oct 31 to Nov 13; 8,000 forecasts, 322 station-days).** Mean error in cm, all leads, with 95% intervals:
+**The test window (Oct 31 to Nov 13; 8,000 forecasts, 322 station-days).** Mean error in cm, all leads, with 95% intervals:
 
 | Forecaster | Error |
 |---|---|
@@ -86,7 +86,7 @@ All numbers come from commands in the repo; the tables and their caveats are in 
 | Hand-written starting formula | 3.92 [3.71, 4.13] |
 | The lab's forecaster (best run by confirm loss) | 3.17 [2.97, 3.39] |
 
-The lab's forecaster is 1.28 cm below the best simple rule on the same forecasts [1.06, 1.50] and 19% below the starting formula. It is better at every lead from 1 to 12 hours (1 h: 1.71 against 2.09 cm) and level with the starting formula at 24 hours.
+The lab's forecaster is 1.28 cm below the best simple rule on the same forecasts [1.06, 1.50] and 19% below the starting formula. It is better at every lead from 1 to 12 hours (1 h: 1.71 against 2.09 cm) and level with the starting formula at 24 hours. That forecaster is the best of 35 finished runs by confirm loss. The two forecasters from the first long run, not picked that way, are 12 to 13% below the starting formula (3.42 and 3.44 cm): that is the typical gain.
 
 **What produced the gain.** One strong model per proposal, judged by the decision rule. The extras did not add a measurable amount:
 
@@ -96,10 +96,10 @@ The lab's forecaster is 1.28 cm below the best simple rule on the same forecasts
 | Single agent, researcher, researcher with notebook (5 seeds each, confirm window; start 3.24 cm) | 2.82, 2.89 and 2.73 cm. No pair is separated (sign test p = 0.375 each) |
 | The first design, a three-role pipeline (2 seeds) | 3.09 cm at twice the cost: the worst arm that uses a model |
 | Notebook backends, search off (2 seeds) | none 3.05, full context 2.93, vector 3.00 cm: inside run-to-run noise |
-| Search on top of the notebook (2 seeds; Crossref, arXiv) | 2.80 and 2.76 cm against 2.66 without search. Of five search-derived changes that passed, four were an idea the model had already listed without search |
-| How much does one run move by chance? | Repeating one arm with one seed moved the result by 0.1 to 0.4 cm |
+| Search on top of the notebook (2 seeds; Crossref, arXiv) | 2.80 and 2.76 cm; the same setup without search gave 2.66, 2.88 and 3.00 cm in three repeats. No difference detectable. Of five search-derived changes that passed, four were an idea the model had already listed without search |
+| How much does one run move by chance? | Repeating one setup with one seed moved the result by 0.1 to 0.55 cm |
 
-**Live sealed forecasts (first evening).** At one hour ahead, on the 46 forecasts that the lab's forecaster and every hand-written model all made: lab 3.64 cm, "the gap continues" 3.32 cm, tide table 58.3 cm; difference +0.32 cm with interval −0.20 to +0.92, so not separated. Longer leads had no shared graded forecasts yet. The dashboard shows the current figures.
+**Live sealed forecasts (first evening, in a storm; snapshots, the dashboard shows the current figures).** At 10:00pm, one hour ahead, on the 46 forecasts that the lab's forecaster and every hand-written model all made: lab 3.64 cm, "the gap continues" 3.32 cm, tide table 58.3 cm; difference +0.32 cm with interval −0.20 to +0.92, so not separated. At 10:30pm, three hours ahead, on the 23 shared forecasts (one hour's worth): lab 6.81 cm, "the gap continues" 4.98 cm; difference +1.83 cm, interval +0.35 to +3.36. So far the lab's forecaster is not better live, and at three hours it is worse.
 
 **Leak found by our own check.** With near-final weather the 24 h figure for the starting formula looked like 3.7 cm; with weather forecasts that existed at the time it is 4.0 cm.
 
@@ -112,7 +112,7 @@ The first version of the lab was a pipeline: a small model diagnosed, a small mo
 - One season and one weekend. A calm week would show smaller differences.
 - At one hour ahead the hand-written starting formula is no better than "the current gap continues". The lab's forecaster is better there on the test window (1.71 against 2.09 cm), but not yet on the first evening of live forecasts, which fell in a storm.
 - The notebook and search have not shown a measurable effect on this problem at this budget. Exa and past.dev were not tested (no keys yet).
-- The lab sees its scores on the select and confirm windows, so figures from those windows are somewhat optimistic. Only the test window is untouched, and it was looked at twice (the second look scored only the starting formula).
+- The lab sees its scores on the select and confirm windows, so figures from those windows are somewhat optimistic. The lab never saw the test window. It was looked at twice (the second look, 47 seconds later, scored only the starting formula). People did see that period earlier: the first rewind tests on Friday afternoon scored the starting formula and the simple rules on Oct 26 to Nov 13, and the starting formula's weather inputs were fixed after that.
 - The backtest's weather for the 24-hour lead comes from runs two days old, which is stricter than reality.
 - Pilot reports (turbulence) are biased toward where aircraft fly; that application's first formula does not yet beat the standard index.
 - Proposals made in the same generation often pick the same idea, which wastes part of each generation.

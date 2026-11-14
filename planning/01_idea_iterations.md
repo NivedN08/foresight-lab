@@ -2,6 +2,8 @@
 
 How we got from the first two ideas to the current project. Each round lists what was considered, the flaw that killed it, and what was kept.
 
+**This is a record of Nov 13 before the event's rules were published.** Later that night the Resources tab showed that Track 2's task is fixed (GPU prices two to three years out) and that everything must be built at the event. The current plan is Track 1 with the coast application only; see `00_event_brief.md` and `09_rebuild_guide.md`. Mentions below of Pacific's track, of a GPU-price task as a third problem, and of building two applications are history.
+
 ## What we are optimising for
 
 1. A demo that works live and is graded by something we do not control.

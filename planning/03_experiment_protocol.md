@@ -1,5 +1,7 @@
 # Experiment protocol
 
+This is the protocol of the Nov 13 rehearsal, kept as its record. The event build (Track 1, coast only) follows the same rules for windows, the decision rule, baselines and the test window, and runs claims 1, 3 and 4. It does not run claim 2 or the turbulence problem.
+
 The rules every number in the pitch must have followed. Written before the experiments are run; changes after that are logged at the bottom with the reason.
 
 ## 1. What a forecast is
@@ -25,7 +27,7 @@ History is cut into four windows, oldest first, with no overlap between the last
 | Train | Fitting a candidate's coefficients | The candidate, inside the sandbox |
 | Select | Deciding whether a change is kept | The evaluator only |
 | Confirm | A kept change must not lose here | The evaluator only |
-| Test | The number we report | Nobody until the end; scored once by a person with `lab.experiments.final_test`, which logs every look |
+| Test | The number we report | No model, ever. A person scores it with `lab.experiments.final_test`, which logs every look |
 
 ## 4. When a change is kept
 
@@ -43,7 +45,7 @@ Every table includes the official reference, the strongest trivial rule, and the
 
 ## 6. The four claims and how each is tested
 
-**Claim 1: the lab's forecaster beats the baselines on data from after it was built.**
+**Claim 1: the lab's forecaster beats the baselines on a later window it never saw, and on live forecasts made after it was built.**
 Test window table (mean loss by lead, block-bootstrap 95% intervals, paired difference against the best baseline) plus the live sealed scoreboard. Which forecasters get the one look at the test window is fixed before the look: (a) the final forecaster of the finished coast run with the lowest confirm-window loss across the ladder, memory and search experiments (ties: lower select-window loss), and (b) the forecaster that is issuing the live sealed forecasts. Every baseline is scored in the same look. Nothing else is scored on the test window. The comparison is a ladder, each rung adding one thing: random non-LLM mutation of the starting formula; a single agent; the lab's researcher with nothing extra; with the notebook; with search; with both; and the older three-role pipeline.
 
 **Claim 2: the lab gets better at research, not only at one problem.**
@@ -77,19 +79,19 @@ Same lab, same seeds, four memory setups: none, full context, plain vector store
 - One weekend is a small sample of weather.
 - Pilot reports are biased toward where aircraft fly and toward reporting bumps.
 - For water level, most of the skill at one hour comes from "the current gap continues"; the hand-written formula adds nothing there.
-- The lab sees each change's score on the select and confirm windows (they appear in its notebook), so both are selected on. Only the test window is clean.
+- The lab sees each change's score on the select and confirm windows (they appear in its notebook), so both are selected on. The lab never sees the test window. In the rehearsal, people did score the starting formula and the simple rules on that period before the windows were fixed (the first rewind tests), so the starting formula's test score is not clean.
 
 ## Change log
 
 | When | Change | Why |
 |---|---|---|
-| Nov 13, night | The starting formula was scored on the test window in a second look, three minutes after the first | The scorer listed the tide table and the two persistence rules as baselines but not the starting formula, so the first look could not say what the lab added to its own starting point. It is a reference, not a selected forecaster. Both looks are in `runs/lab/final_test/log.jsonl`. The scorer now always includes it. |
-| Nov 13, night | The ladder got three more seeds (3, 4, 5) for single agent, researcher, and researcher with notebook | Repeating one arm with one seed moved the final loss by 0.1 to 0.4 cm, as large as the gaps between arms, so two seeds could not rank them. Decided after seeing the two-seed results. The added runs finished before the test-window pick and were eligible for it; none had the lowest confirm loss. |
+| Nov 13, night | Three departures from the test-window rule as written. (1) The starting formula was scored in a second look, 47 seconds after the first. (2) The rule said "the forecaster that is issuing the live sealed forecasts"; two were (lab-a and lab-b) and both were scored. (3) The best run's forecaster was promoted to the live job as lab-c three and a half minutes after the look | (1) The rule said every baseline is scored in the same look, and section 5 counts the starting formula as one, but the scorer listed only the tide table and the two persistence rules. The second look broke the rule as written; nothing was chosen after it, both looks are in `runs/lab/final_test/log.jsonl`, and the scorer now always includes the starting formula. (2) Wording. (3) So its live record starts after its test score was known; say so when quoting its live results. When the rule was committed (41 minutes before the look) the run it would pick was already known. |
+| Nov 13, night | The ladder got three more seeds (3, 4, 5) for single agent, researcher, and researcher with notebook | Repeating one setup with one seed moved the final loss by 0.1 to 0.55 cm, as large as the gaps between arms, so two seeds could not rank them. Decided after seeing the two-seed results. The added runs finished before the test-window pick and were eligible for it; none had the lowest confirm loss. |
 | Nov 13, night | Rule added for which forecasters are scored on the test window (claim 1, above) | The rule did not exist yet. Written after the ladder and before the search experiment finished, and before any look at the test window. |
 | Nov 13, night | Search experiment arms changed to: off, Crossref, arXiv, plus OpenAlex and Exa when their keys are set. Crossref added as a third keyless source; requests to one source are now spaced, and a "daily allowance used up" reply is not retried | In the ladder experiment the two arms with search got almost no results: all 72 OpenAlex calls were refused (its keyless daily allowance, shared by network address, was used up) and 51 of 72 arXiv calls timed out or were refused. Those two arms are therefore extra samples of the arms without search, and the ladder says nothing about search. Changed before the search experiment started. |
 | Nov 13, evening | The lab's default proposal mode changed from a three-role pipeline (analyst, scout, engineer forced to implement the scouted idea) to a single researcher that may use the notebook and a board of scouted ideas or ignore them. Claim 1 became a ladder; the earlier matrices were re-planned under new names | In the first controlled comparison (2 seeds, 48 proposals) the single agent beat the pipeline on the confirm window at equal proposals (2.70 vs 3.00 cm) and at equal dollars. The old result is kept in `runs/exp/claim1_coast` and quoted in `docs/experiments.md`. Agents also no longer see confirm-window figures in the notebook, only whether the later-window check passed. |
 | Nov 13, evening | Claim 2 control changed: "fresh, handed the old best forecaster" replaced by "fresh with a cheat sheet" (the interface and sandbox rules, no findings). Rehearsal runs use 2 seeds, not 5 | A forecaster for one problem cannot run on another, so it cannot be handed over. Two seeds is all one laptop can do overnight; the event runs use 5. Two seeds support no significance claim and the report says so. |
 | Nov 13, evening | Time-to-target goal fixed by rule: 5% below the starting formula's loss on the confirm window, per problem | The report's first version set the goal after the fact from the reference arm's own results. The rule was set while the first matrix (lab vs baselines on the coast) was partly finished; the other three had not started. |
-| Nov 13, evening | "Same budget" defined as the same number of proposals; dollars and minutes are reported beside it | A single-agent proposal costs about a seventh of a swarm proposal, so equal proposals is not equal money. Both views are reported. |
+| Nov 13, evening | "Same budget" defined as the same number of proposals; dollars and minutes are reported beside it | A single-agent proposal costs about a third of a swarm proposal, so equal proposals is not equal money. Both views are reported. |
 | Nov 13, evening | The problem description shown to agents no longer quotes the tide-table offset of the most recent weeks | That figure came from a period overlapping the test window. Changed after some runs of the first matrix had finished; the effect is one sentence of context. |
 | Nov 13, afternoon | Weather inputs in the backtest switched from stitched near-final values to forecasts issued before the issue time | Our own checker found that most of the first formula's 24-hour gain (5.1 cm without weather terms, 3.7 cm with) came from weather values that were not available at the issue time. The live sealed forecasts were not affected. |

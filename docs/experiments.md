@@ -146,11 +146,12 @@ What this supports, and what it does not:
 - The spread between seeds (up to 0.7 cm within one arm) is larger than any difference between
   arms. Five seeds do not rank single agent, researcher, or researcher with notebook.
 - Ideas the researcher marked as coming from the notebook passed the rule more often than its
-  own (19 of 27 against 22 of 65 in the two notebook arms), but fewer of them were adopted per
-  pass (6 of 19 against 11 of 22). The 27 notebook-sourced proposals drew on only 12 distinct
-  notebook entries per generation: up to all four proposals in a generation picked the same
-  entry and wrote the same change. The pass rate counts one idea several times, so it is not
-  evidence of better ideas. Proposals in one generation should be made to differ.
+  own (20 of 31 against 38 of 133 over all seven runs of the two notebook arms), but fewer of
+  them were adopted per pass (6 of 20 against 22 of 38). In the four runs with seeds 1 and 2,
+  the 27 notebook-sourced proposals came from only 12 distinct pairs of generation and notebook
+  entry: up to all four proposals in a generation picked the same entry and wrote the same
+  change. The pass rate counts one idea several times, so it is not evidence of better ideas.
+  Proposals in one generation should be made to differ.
 
 The search failure was fixed before the search experiment ran: Crossref was added as a keyless
 source, requests are spaced, and a used-up daily allowance is no longer retried (`docs/swarm.md`).
@@ -166,7 +167,7 @@ skipped because no key is set). Confirm loss of the final forecaster, cm:
 | memory_full_context | 3.047 | 2.819 | 1.36 | under 0.1 ms |
 | memory_vector | 2.996 | 3.012 | 1.31 | 1.4 ms |
 
-- Both notebook arms ended lower than no notebook on both seeds, by 0.02 to 0.21 cm. That is
+- Both notebook arms ended lower than no notebook on both seeds, by 0.01 to 0.21 cm. That is
   inside the noise measured below, so it is not a result.
 - All six runs reached the target (5% below the starting formula). The notebook did not make
   that faster: 12 to 20 proposals with or without it.
@@ -175,22 +176,23 @@ skipped because no key is set). Confirm loss of the final forecaster, cm:
 ### How much one run moves by chance
 
 `memory_none` here and `researcher_plain` in the ladder are the same arm with the same seeds, run
-twice. So are `memory_vector` and `researcher_memory`. The model is not deterministic, so the two
-copies differ:
+twice. `memory_vector`, `researcher_memory` and `search_off` (in the search experiment) are one
+setup run three times. The model is not deterministic, so the copies differ:
 
-| setup | seed | first run | second run |
-|---|---|---|---|
-| researcher, no notebook | 1 | 2.820 | 3.069 |
-| researcher, no notebook | 2 | 2.713 | 3.026 |
-| researcher, vector notebook | 1 | 3.116 | 2.996 |
-| researcher, vector notebook | 2 | 2.636 | 3.012 |
+| setup | seed | first run | second run | third run |
+|---|---|---|---|---|
+| researcher, no notebook | 1 | 2.820 | 3.069 | |
+| researcher, no notebook | 2 | 2.713 | 3.026 | |
+| researcher, vector notebook | 1 | 3.116 | 2.996 | 2.562 |
+| researcher, vector notebook | 2 | 2.636 | 3.012 | 2.765 |
 
-Repeating one arm with one seed moves the final loss by 0.1 to 0.4 cm. Differences between arms
-in the ladder and in this experiment are the same size or smaller. Pooling every finished
-researcher run so far, counting the two ladder arms whose search failed as runs without search:
-no notebook 2.806 cm (6 runs), vector notebook 2.805 cm (6 runs). The ladder was then extended to five seeds for the three arms without search so that
-this could be tested rather than eyeballed; the result is in the ladder section above: the
-notebook arm is lowest on average (2.73 against 2.82 and 2.89 cm) but not separated.
+Repeating one setup with one seed moved the final loss by 0.1 to 0.55 cm. Differences between
+arms in the ladder, the memory experiment and the search experiment are the same size or smaller.
+
+Pooling every finished researcher run of the night without working search (the two ladder arms
+whose search failed count as runs without search): no notebook 2.86 cm (9 runs), vector notebook
+2.73 cm (11 runs). The notebook is lower on average, as in the five-seed ladder (2.73 against
+2.89 cm, 4 of 5 seeds), but the runs are not paired and nothing here establishes it.
 
 ## What the search experiment showed
 
@@ -204,8 +206,10 @@ search worked: 71 searches, none failed. Confirm loss of the final forecaster, c
 | search_crossref | 2.767 | 2.822 | 1.85 | 8.8 | 45 | 8 | 3 | 2 |
 | search_arxiv | 2.685 | 2.838 | 1.93 | 8.8 | 41 | 11 | 2 | 1 |
 
-- Search did not lower the final loss. Both search arms ended slightly above the arm without
-  search, inside run-to-run noise, at about 45% more cost and twice the time.
+- No difference in final loss is detectable either way. Both search arms ended above this
+  experiment's arm without search (mean 2.66), but that arm is the luckiest of three copies of
+  the same setup; averaged over the three copies, no search is 2.85 cm, against 2.80 (Crossref)
+  and 2.76 (arXiv). Search cost about 45% more per run and took twice the time.
 - The researcher took an idea from the board in 19 of 96 proposals. Five of those passed the
   rule and three became the forecaster in use.
 - Four of the five were the same idea, adding the neighbouring gauges' recent anomalies, which
@@ -215,7 +219,7 @@ search worked: 71 searches, none failed. Confirm loss of the final forecaster, c
 - So with keyless scholarly search, on this problem and budget, search found nothing useful that
   the model did not already know. The Exa arm is the open question and needs a key.
 
-## The test window, scored once
+## The test window
 
 Which forecasters got the one look was fixed in the protocol before the look: the final forecaster
 of the finished coast run with the lowest confirm loss across the ladder, memory and search
@@ -236,16 +240,26 @@ Oct 31 to Nov 13. Mean absolute error in cm with 95% intervals that resample sta
 - Paired with the best simple rule (damped) on the same cases: the lab's best forecaster is
   1.28 cm lower [1.06, 1.50]; lab-a 1.03 lower [0.84, 1.24]; lab-b 1.02 lower [0.82, 1.23]; the
   starting formula 0.54 lower [0.38, 0.71].
-- Against the starting formula the lab's best forecaster is 0.75 cm (19%) lower and the intervals
+- Against the starting formula the lab's best forecaster is 0.74 cm (19%) lower and the intervals
   do not overlap. No paired interval exists for that comparison: see the next point.
 - Two looks, not one. The scorer's first look left the starting formula out of its baselines, so
-  it was scored in a second logged look three minutes later (`runs/lab/final_test/log.jsonl`).
+  it was scored in a second logged look 47 seconds later (`runs/lab/final_test/log.jsonl`).
   It is a reference, not a selected forecaster, and nothing was chosen after seeing it. The
   scorer now always includes it and reports the paired difference.
 - The gain is at 1 to 12 hours. At 24 hours the lab's forecasters and the starting formula are
   within each other's intervals (4.12 against 4.23 cm).
-- The live forecasters lab-a and lab-b give the same error at four of five leads: the eight
+- The live forecasters lab-a and lab-b give the same error at four of five leads: the seven
   generations between them changed little outside the window they were selected on.
+- **The 3.17 cm forecaster is the best of 35 finished coast runs by confirm loss**, so it is not
+  what a typical run gives. lab-a and lab-b, which were not picked that way, are 12 to 13% below
+  the starting formula (3.42 and 3.44 against 3.92 cm). Quote that as the typical gain and 19%
+  as the best run's.
+- **The test period was not untouched by people.** The first rewind tests on the afternoon of
+  Nov 13 (`runs/coast/backtest*.json`) scored the starting formula and the simple rules on
+  Oct 26 to Nov 13, which contains the whole test window, and the starting formula's weather
+  inputs were fixed after seeing those scores. The lab's models never saw the test window. This
+  probably flatters the starting formula, which would make the lab's margin over it
+  conservative, but it means the starting formula's test score is not a clean number.
 
 ## What the transfer experiment showed
 
@@ -264,14 +278,16 @@ formula scores 17.05.
 
 - Every arm improved on the starting formula by 6 to 9%, and every run reached the target, in
   8 to 20 proposals (fresh 8 and 12; warm 8 and 12; the cheat sheet arm was slowest at 16 and 20).
-- Warm against fresh: lower on one seed, higher on the other. The shuffled notebook did as well
-  as the real one. The whole spread between arms is 0.35, the size of the spread between seeds.
+- Warm (notebook and playbook) against fresh: lower on one seed, higher on the other.
+- Notebook only was the lowest arm and beat fresh on both seeds, by 0.48 and 0.23. The shuffled
+  notebook was 0.17 to 0.18 above it on both seeds. Both gaps are within the spread between
+  seeds of one arm (up to 0.52), so neither is a result.
 - So this gives no evidence that a lab which has worked on the coast is better at a new problem.
-  Two seeds could not show a small effect; they do rule out a large one.
+  With two seeds an effect smaller than about 0.5 (3% of the starting loss) could not be seen.
 
 ## The ready-made matrices
 
-All four use small budgets: 6 generations x 4 proposals, seeds 1 and 2, a $4 cap per run, and the
+All four use small budgets: 6 generations x 4 proposals, seeds 1 and 2 (the ladder has seeds 1 to 5 for three arms), a $4 cap per run, and the
 fixed target rule (5% below the seed's confirm loss). Raise `generations` and `seeds` for the runs
 that go in the pitch. The protocol asks for five seeds for fresh and warm and three for the
 shuffled arm, and the report will not test a difference on fewer than five.
@@ -363,7 +379,7 @@ In the smoke run, the researcher call itself cost about $0.055 per proposal. Sco
 $0.06 per generation (one Sonnet `anticipate` call and three Haiku calls), and it is paid only when
 search is on.
 
-The dry runs of 14 Nov estimated:
+The dry runs of Nov 13 (evening, Pacific) estimated:
 - `claim1_ladder_coast`: about $22, ~44 min with `--parallel 2`;
 - `claim4_memory_coast`: about $10, ~24 min (the past.dev arm skipped without `PAST_API_KEY`);
 - `claim3_search_coast`: about $10, ~24 min (the Exa arm skipped without `EXA_API_KEY`);

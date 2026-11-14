@@ -54,7 +54,7 @@ $250 Modal, $200 Devin, $100 Tinker, $50 Exa, plus OpenAI API credits.
 |---|---|
 | Technicality | Sealed ledger, sandbox, time-ordered windows, block statistics, the research loop |
 | Creativity | Forecasts locked in before the answer exists and graded by measurements we do not control |
-| Usefulness | The sea is running 30 to 55 cm above the tide tables; the lab's formula cuts error against every simple rule |
+| Usefulness | The sea is running 30 to 55 cm above the tide tables; the event's test-window table says how much the lab's formula cuts the error (in rehearsal: below every simple rule) |
 | Demo | The live chart: sealed versus measured, updating in the room |
 | Track / sponsor alignment | Track 1's own wording, step for step; Exa in the main loop; past.dev as the shared notebook; Modal for sandboxes and the sealing job |
 

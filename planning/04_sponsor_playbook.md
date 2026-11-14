@@ -37,7 +37,7 @@ Pacific's track (GPU prices two to three years out) is not part of this plan.
 **What rehearsal showed with free scholarly search (not Exa):** 19 of 96 proposals took an idea from search; 5 passed; 4 of those 5 were an idea the model had already listed before seeing any result; final error was no lower. The Exa arm is the test of whether a better search changes that.
 
 **What we show**
-- Search is how the lab gets ideas to test. Each proposal states a knowledge gap, answers it closed-book first, then searches; the claim it tests is marked as already known to the model or new.
+- Search is one of the places the lab gets ideas to test. Once per generation the model first lists, without search, what it would try next. Then Exa fills a board of ideas with their sources. Each proposal may take one or ignore the board, and says which. A change that came from the board is marked as already on the model's own list or new.
 - A ledger of every claim tested, with its source page and its measured effect, including the failures.
 - A lineage view: each accepted change links to the page it came from.
 
@@ -84,7 +84,7 @@ Pacific's track (GPU prices two to three years out) is not part of this plan.
 
 **What we show**
 - Every candidate the agents write is untrusted code. On Modal each evaluation runs in its own sandbox with the network blocked; the experiment matrix (arms x seeds x generations) fans out across containers and scales to zero.
-- A scheduled Modal function seals forecasts and grades due ones every few minutes all weekend, so the demo does not depend on a laptop. (On Friday the laptop's lid was closed for two stretches and the live jobs missed cycles; that is the argument for this.)
+- A scheduled Modal function seals forecasts and grades due ones every few minutes all weekend, so the demo does not depend on a laptop. (On Friday the laptop slept four times and the live jobs missed cycles; that is the argument for this.)
 
 **Slide numbers:** sandboxed evaluations run, peak parallel containers, wall-clock against the same matrix run serially on one laptop, total cost.
 

@@ -11,7 +11,7 @@ Private rehearsal repository for the SF AI Research Hackathon (Nov 14–15, 2026
 | `lab/core/` | Sealed forecast ledger, problem interface, statistics |
 | `lab/tasks/coast/` | Sea level above the tide table and wave height on the US West Coast |
 | `lab/tasks/turb/` | Aviation turbulence over the continental US |
-| `lab/tasks/series/` | Any time series from a CSV (for the track task) |
+| `lab/tasks/series/` | Any time series from a CSV |
 | `lab/sandbox/` | Runs agent-written code with no network, files or truths |
 | `lab/evalpool/` | Fits and scores candidate forecasters |
 | `lab/swarm/`, `lab/memory/`, `lab/search/`, `lab/llm/` | The research loop, its notebook, literature search, model backends |
@@ -54,7 +54,7 @@ Check a problem through the evaluator (baselines and the starting formula on the
 Run the research lab:
 
 ```bash
-.venv/bin/python -m lab.swarm.run --problem coast_water --generations 10 --proposals 6 --memory vector --search openalex
+.venv/bin/python -m lab.swarm.run --problem coast_water --generations 10 --proposals 6 --memory vector --search crossref
 ```
 
 Put the lab's best forecaster into the live job:
