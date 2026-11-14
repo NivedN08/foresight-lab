@@ -327,7 +327,7 @@ export function create(root, api) {
     const msg = $(".map-msg");
     if (!ok()) {
       msg.hidden = false;
-      msg.textContent = failed ? "Cannot reach the lab server. Retrying every 30 seconds." : "No sealed risk maps yet: the live job has not written a state file.";
+      msg.textContent = failed ? "Cannot reach the lab server. Retrying every 30 seconds." : !state ? "Reading the latest cycle…" : "No sealed risk maps yet: the live job has not written a state file.";
     } else if (!slot.rec) {
       msg.hidden = false;
       msg.textContent = `Nothing was sealed for ${fmtWhen(slot.t)}.`;
@@ -697,6 +697,7 @@ export function create(root, api) {
     if (!ok()) {
       sEl.innerHTML = failed && !state
         ? "Cannot reach the lab server."
+        : !state ? "Reading the latest cycle…"
         : `No forecasts sealed yet. Start the live job: <code>.venv/bin/python -m lab.tasks.turb.live run --interval 1800</code>`;
       sub.textContent = failed ? "The dashboard retries every 30 seconds." : "";
       return;
@@ -749,7 +750,7 @@ export function create(root, api) {
     const svgEl = $("svg.roc");
     const note = $(".detail .chart-note");
     const words = $(".roc-words");
-    const size = Math.max(170, Math.min(230, Math.floor(svgEl.parentNode.getBoundingClientRect().width)));
+    const size = Math.max(150, Math.min(window.innerHeight < 820 ? 170 : 230, Math.floor(svgEl.parentNode.getBoundingClientRect().width)));
     const m = { l: 42, r: 8, t: 8, b: 32 };
     const s = d3.select(svgEl).attr("viewBox", `0 0 ${size} ${size}`).attr("height", size);
     const x = d3.scaleLinear().domain([0, 1]).range([m.l, size - m.r]);
@@ -876,6 +877,10 @@ export function create(root, api) {
 
   function renderLog() {
     const row = $(".log-row");
+    if (!state) {
+      row.innerHTML = `<div class="log-empty">${failed ? "Cannot reach the lab server." : "Reading the ledger…"}</div>`;
+      return;
+    }
     if (!ok()) {
       row.innerHTML = `<div class="log-empty">No forecasts sealed yet. Start the live job: <code>.venv/bin/python -m lab.tasks.turb.live run --interval 1800</code></div>`;
       return;

@@ -24,6 +24,9 @@ const LABEL = {
 };
 const OFFICIAL = new Set(["TideTable", "WaveModel"]);
 const LABS = new Set([LAB, WAVE_LAB]);
+// Forecasters promoted from the research lab appear under model names starting with "Lab:".
+const isPromoted = (m) => typeof m === "string" && m.startsWith("Lab:");
+const modelLabel = (m) => (isPromoted(m) ? `Lab: ${m.slice(4)}` : LABEL[m] || m);
 
 const EXTENT = { lon: [-127.6, -115.8], lat: [32.3, 49.3] };
 const BAY = { lon: [-123.12, -121.9], lat: [37.3, 38.2] };
@@ -93,7 +96,7 @@ function judge(o, refError) {
 }
 
 export function create(root, api) {
-  const ui = { station: DEFAULT_STATION, buoy: null, lead: 6, boardMode: "live", boardKind: "water" };
+  const ui = { station: DEFAULT_STATION, buoy: null, lead: 6, boardMode: "live", boardKind: "water", seal: null, sealChosen: false };
   let state = null;
   let failed = false;
   let active = false;
@@ -119,6 +122,7 @@ export function create(root, api) {
           <h2 class="strip-title">Water level</h2>
           <div class="controls"><span class="seg-label">Sealed</span><div class="seg lead-seg" role="group" aria-label="Lead time"></div></div>
         </div>
+        <div class="seal-pick" hidden><span class="seg-label">Seals shown</span><div class="seg model-seg" role="group" aria-label="Model whose sealed forecasts are shown"></div></div>
         <div class="chart-wrap"><svg class="chart strip-water"></svg><div class="chart-note" hidden></div></div>
         <div class="legend strip-legend"></div>
       </section>
@@ -166,6 +170,16 @@ export function create(root, api) {
     ui.lead = +b.dataset.lead;
     renderSide();
   });
+  $(".model-seg").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    ui.seal = b.dataset.model;
+    ui.sealChosen = true;
+    api.setHash(hashParts());
+    renderMapMarks();
+    renderSide();
+    pollLog();
+  });
   $(".mode-seg").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (!b || b.disabled) return;
@@ -182,6 +196,24 @@ export function create(root, api) {
   // ------------------------------------------------------------ data helpers
 
   const stations = () => (state && state.water ? state.water.stations : []);
+
+  // Models whose seals can be shown: the hand-written lab formula and every promoted lab forecaster.
+  function sealModels() {
+    const models = (state && state.water && state.water.models) || [];
+    return [LAB, ...models.filter(isPromoted)].filter((m, i, a) => a.indexOf(m) === i);
+  }
+  // Default: the newest promoted forecaster (by promoted_at), else the hand-written formula.
+  function defaultSealModel() {
+    const promoted = sealModels().filter(isPromoted);
+    if (!promoted.length) return LAB;
+    const info = new Map(((state && state.water && state.water.promoted) || []).map((p) => [p.model, p.promoted_at || ""]));
+    return [...promoted].sort((a, b) => String(info.get(b) || "").localeCompare(String(info.get(a) || "")) || promoted.indexOf(b) - promoted.indexOf(a))[0];
+  }
+  function sealModel() {
+    const list = sealModels();
+    if (!ui.sealChosen || !list.includes(ui.seal)) { ui.seal = defaultSealModel(); }
+    return ui.seal;
+  }
   const buoys = () => (state && state.waves ? state.waves.buoys : []);
   const station = () => stations().find((s) => s.id === ui.station) || stations()[0];
   const buoy = () => buoys().find((b) => b.id === ui.buoy) || null;
@@ -218,7 +250,7 @@ export function create(root, api) {
   }
 
   function hashParts() {
-    return [ui.station, ui.buoy];
+    return [ui.station, ui.buoy, ui.sealChosen ? ui.seal : null];
   }
 
   // ------------------------------------------------------------ map: base
@@ -411,7 +443,7 @@ export function create(root, api) {
 
   // Lab forecast for MAP_LEAD hours ahead, from the latest issue still in the future.
   function mapForecast(st) {
-    const list = forecastList(st.forecasts && st.forecasts[LAB], "water")
+    const list = forecastList(st.forecasts && st.forecasts[sealModel()], "water")
       .filter((o) => o.lead === MAP_LEAD && o.target.getTime() > Date.now());
     list.sort((a, b) => b.issued - a.issued);
     return list[0] || null;
@@ -433,7 +465,7 @@ export function create(root, api) {
     const msg = $(".map-msg");
     if (!state || state.empty) {
       msg.hidden = false;
-      msg.textContent = failed ? "Cannot reach the lab server. Retrying every 30 seconds." : "No tide gauges yet: the live job has not written a state file.";
+      msg.textContent = failed ? "Cannot reach the lab server. Retrying every 30 seconds." : !state ? "Reading the latest cycle…" : "No tide gauges yet: the live job has not written a state file.";
     } else msg.hidden = true;
   }
 
@@ -589,6 +621,7 @@ export function create(root, api) {
     if (!state || state.empty) {
       sentenceEl.innerHTML = failed && !state
         ? "Cannot reach the lab server."
+        : !state ? "Reading the latest cycle…"
         : `No forecasts sealed yet. Start the live job: <code>.venv/bin/python -m lab.tasks.coast.live run</code>`;
       subEl.textContent = failed ? "The dashboard retries every 30 seconds." : "";
       return;
@@ -609,7 +642,8 @@ export function create(root, api) {
       s = cm === 0 ? `${name} is running right on the tide table.`
         : `${name} is running <span class="num">${Math.abs(cm)} cm</span> ${cm > 0 ? "above" : "below"} the tide table.`;
     }
-    const fl = forecastList(st.forecasts && st.forecasts[LAB], "water").filter((o) => o.lead === 6);
+    const SM = sealModel();
+    const fl = forecastList(st.forecasts && st.forecasts[SM], "water").filter((o) => o.lead === 6);
     const due = fl.filter((o) => o.target.getTime() <= now && o.target.getTime() > now - 1.5 * H)
       .sort((a, b) => b.target - a.target)[0];
     const sealedCm = (m) => {
@@ -642,15 +676,15 @@ export function create(root, api) {
       alertEl.hidden = false;
       alertEl.textContent = `${top.event}${area ? ` for ${area}` : ""}${more ? `, and ${more} more coastal alert${more > 1 ? "s" : ""} from the National Weather Service` : ""}.`;
       const counts = d3.rollups(alerts, (v) => v.length, (a) => a.event).sort((a, b) => b[1] - a[1]);
-      alertEl.title = counts.map(([e, n]) => `${e}: ${n}`).join("\n");
+      alertEl.title = [alertEl.textContent, ...counts.map(([e, n]) => `${e}: ${n}`)].join("\n");
     }
 
     // what has been graded, or when grading starts
     const sb = state.water.scoreboard || {};
-    const lab6 = sb[LAB] && sb[LAB]["6"];
+    const lab6 = sb[SM] && sb[SM]["6"];
     const tide6 = sb.TideTable && sb.TideTable["6"];
     if (lab6 && lab6.graded) {
-      subEl.textContent = `Graded so far at 6 hours ahead, over all ${stations().length} gauges: the lab formula is off by ${lab6.mae_cm.toFixed(1)} cm on average (${fmtInt(lab6.graded)} forecasts)` +
+      subEl.textContent = `Graded so far at 6 hours ahead, over all ${stations().length} gauges: ${SM === LAB ? "the lab formula" : modelLabel(SM)} is off by ${lab6.mae_cm.toFixed(1)} cm on average (${fmtInt(lab6.graded)} forecasts)` +
         (tide6 ? `, the tide table by ${tide6.mae_cm.toFixed(1)} cm.` : ".");
     } else {
       subEl.textContent = firstGradeText();
@@ -660,7 +694,7 @@ export function create(root, api) {
   function firstGradeText() {
     let first = null;
     for (const s of stations()) {
-      for (const o of forecastList(s.forecasts && s.forecasts[LAB], "water")) {
+      for (const o of forecastList(s.forecasts && s.forecasts[sealModel()], "water")) {
         if (o.error_cm == null && (!first || o.target < first)) first = o.target;
       }
     }
@@ -749,10 +783,17 @@ export function create(root, api) {
       wNote.hidden = false;
       wNote.textContent = state && state.empty ? "No gauge data yet." : "Waiting for data.";
     } else {
-      const fl = forecastList(st.forecasts && st.forecasts[LAB], "water").filter((o) => o.lead === ui.lead);
+      const SM = sealModel();
+      const choices = sealModels();
+      const pick = $(".seal-pick");
+      pick.hidden = choices.length < 2;
+      const seg = $(".model-seg");
+      const want = choices.map((m) => `<button data-model="${esc(m)}" aria-pressed="${m === SM}">${esc(modelLabel(m))}</button>`).join("");
+      if (seg.innerHTML !== want) seg.innerHTML = want;
+      const fl = forecastList(st.forecasts && st.forecasts[SM], "water").filter((o) => o.lead === ui.lead);
       const nGraded = fl.filter((o) => o.error_cm != null).length;
       stripChart(wSvg, wNote, {
-        height: 172,
+        height: window.innerHeight < 820 ? 106 : 172,
         clipId: "clip-water",
         unit: "m",
         unitLong: "metres above mean lower low water",
@@ -763,7 +804,7 @@ export function create(root, api) {
         judge: (o) => judge(o, o.truthResidual == null ? null : Math.abs(o.truthResidual) * 100),
         tip: (o) => {
           let h = `<b>Issued ${esc(fmtWhen(o.issued))}</b> for ${esc(fmtWhen(o.target))}, ${o.lead} h ahead<br>`;
-          h += `<span class="s">Lab formula: ${o.value.toFixed(2)} m, ${esc(cmText(o.residual))}</span><br>`;
+          h += `<span class="s">${esc(modelLabel(SM))}: ${o.value.toFixed(2)} m, ${esc(cmText(o.residual))}</span><br>`;
           if (o.error_cm != null) {
             h += `Measured: ${o.truth.toFixed(2)} m, ${esc(cmText(o.truthResidual))}<br>`;
             h += `Lab error ${o.error_cm.toFixed(1)} cm; <span class="o">tide table error ${(Math.abs(o.truthResidual) * 100).toFixed(1)} cm</span>`;
@@ -790,7 +831,7 @@ export function create(root, api) {
       const fl = forecastList(b.forecasts && b.forecasts[WAVE_LAB], "waves").filter((o) => o.lead === ui.lead);
       const ref = new Map(forecastList(b.forecasts && b.forecasts[WAVE_REF], "waves").map((o) => [o.key, o]));
       stripChart($("svg.strip-waves"), $(".waves .chart-note"), {
-        height: 112,
+        height: window.innerHeight < 820 ? 96 : 112,
         clipId: "clip-waves",
         unit: "m",
         unitLong: "significant wave height, metres",
@@ -852,6 +893,8 @@ export function create(root, api) {
     const water = ui.boardKind === "water";
     const block = water ? state.water : state.waves;
     const models = block.models || [];
+    const shown = water ? sealModel() : WAVE_LAB;
+    const hl = (m) => m === shown;
     const leads = block.leads_h || LEADS;
     let cell;
     if (ui.boardMode === "live") {
@@ -868,13 +911,13 @@ export function create(root, api) {
       note.textContent = bt ? `Backtest over the past ${bt.days} days: mean error in cm. Small figures count forecasts.` : "No backtest has been run yet.";
     }
     let html = `<thead><tr><th>Ahead</th>${models.map((m) =>
-      `<th class="${OFFICIAL.has(m) ? "official" : ""}${LABS.has(m) ? "lab" : ""}">${esc(LABEL[m] || m)}</th>`).join("")}</tr></thead><tbody>`;
+      `<th class="${OFFICIAL.has(m) ? "official" : ""}${hl(m) ? "lab" : ""}">${esc(modelLabel(m))}</th>`).join("")}</tr></thead><tbody>`;
     for (const l of leads) {
       const cells = models.map((m) => cell(m, l));
       const vals = cells.filter(Boolean).map((c) => c.v);
       const best = vals.length > 1 ? Math.min(...vals) : null;
       html += `<tr><th>${l} h</th>` + cells.map((c, i) => {
-        const cls = [LABS.has(models[i]) ? "lab" : ""];
+        const cls = [hl(models[i]) ? "lab" : ""];
         if (!c) return `<td class="dash ${cls.join(" ")}"><span class="v">–</span><span class="n"></span></td>`;
         if (best != null && c.v === best) cls.push("best");
         return `<td class="${cls.join(" ")}"><span class="v">${c.v.toFixed(ui.boardMode === "live" ? 1 : 2)}</span><span class="n">${fmtInt(c.n)}</span></td>`;
@@ -910,7 +953,8 @@ export function create(root, api) {
 
   async function pollLog() {
     if (!active || !state || state.empty) { renderLog(); return; }
-    const base = `/api/coast/records?model=${LAB}&kind=coast_water&station=${encodeURIComponent(ui.station)}`;
+    const SM = sealModel();
+    const base = `/api/coast/records?model=${encodeURIComponent(SM)}&kind=coast_water&station=${encodeURIComponent(ui.station)}`;
     const [done, open] = await Promise.all([
       api.getJSON(`${base}&graded=yes&limit=6`),
       api.getJSON(`${base}&graded=no&limit=8`),
@@ -918,7 +962,7 @@ export function create(root, api) {
     if (done || open) {
       const bySeq = new Map();
       for (const r of [...(done ? done.records : []), ...(open ? open.records : [])]) bySeq.set(r.seq, r);
-      logRecords = { station: ui.station, list: [...bySeq.values()].sort((a, b) => a.seq - b.seq) };
+      logRecords = { station: ui.station, model: SM, list: [...bySeq.values()].sort((a, b) => a.seq - b.seq) };
     }
     renderLog();
   }
@@ -926,12 +970,16 @@ export function create(root, api) {
   function renderLog() {
     const row = $(".log-row");
     const st = station();
-    $(".log-sub").textContent = st ? `${st.name}, lab formula; newest at right` : "";
-    if (!state || state.empty) {
+    $(".log-sub").textContent = st ? `${st.name}, ${sealModel() === LAB ? "lab formula" : modelLabel(sealModel())}; newest at right` : "";
+    if (!state) {
+      row.innerHTML = `<div class="log-empty">${failed ? "Cannot reach the lab server." : "Reading the ledger…"}</div>`;
+      return;
+    }
+    if (state.empty) {
       row.innerHTML = `<div class="log-empty">No forecasts sealed yet. Start the live job: <code>.venv/bin/python -m lab.tasks.coast.live run</code></div>`;
       return;
     }
-    if (!logRecords || logRecords.station !== ui.station) {
+    if (!logRecords || logRecords.station !== ui.station || logRecords.model !== sealModel()) {
       row.innerHTML = `<div class="log-empty">Reading the ledger…</div>`;
       return;
     }
@@ -971,6 +1019,7 @@ export function create(root, api) {
       ensureSelection();
       renderMapMarks();
       renderSide();
+      renderLog();
     },
     async poll() {
       await pollLog();
@@ -979,6 +1028,7 @@ export function create(root, api) {
       active = true;
       if (parts[0]) ui.station = parts[0];
       if (parts[1]) ui.buoy = parts[1];
+      if (parts[2]) { ui.seal = parts[2]; ui.sealChosen = true; }
       ensureSelection();
       if (!land) loadLand();
       const { w, h } = boxSize(mapPane, 300, 300);

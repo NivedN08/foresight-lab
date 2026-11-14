@@ -2,19 +2,21 @@
 
 import * as coast from "./coast.js";
 import * as turb from "./turb.js";
+import * as lab from "./lab.js";
 import { getJSON, fmtAge, fmtInt, esc, zoneName } from "./seal.js";
 
 const POLL_MS = 30_000;
 const STALE_MS = 45 * 60_000;
-const VIEWS = { coast, turb };
-const TASK_LABEL = { coast: "Coast", turb: "Turbulence" };
+const VIEWS = { coast, turb, lab };
+const TASK_LABEL = { coast: "Coast", turb: "Turbulence", lab: "Lab" };
+const FORECAST_TASKS = ["coast", "turb"]; // views with a sealed state file and ledger
 
 const app = {
   view: "coast",
   modules: {},
   states: { coast: undefined, turb: undefined },
   ledgers: { coast: null, turb: null },
-  fetchedAt: { coast: 0, turb: 0 },
+  fetchedAt: { coast: 0, turb: 0, lab: 0 },
   failed: { coast: false, turb: false },
 };
 
@@ -44,6 +46,15 @@ function setHash(view, parts) {
 
 function renderHeader() {
   const v = app.view;
+  const own = app.modules[v] && app.modules[v].headerStatus;
+  if (own) {
+    const h = own();
+    header.classList.remove("broken");
+    chainEl.textContent = h.chain;
+    ageEl.textContent = h.age;
+    ageEl.classList.toggle("stale", !!h.stale);
+    return;
+  }
   const led = app.ledgers[v];
   const st = app.states[v];
   let records, graded, ok, message;
@@ -70,6 +81,13 @@ function renderHeader() {
 }
 
 function renderAge() {
+  const own = app.modules[app.view] && app.modules[app.view].headerStatus;
+  if (own) {
+    const h = own();
+    ageEl.textContent = h.age;
+    ageEl.classList.toggle("stale", !!h.stale);
+    return;
+  }
   const st = app.states[app.view];
   ageEl.classList.remove("stale");
   if (st === undefined) {
@@ -115,6 +133,12 @@ async function fetchLedger(task) {
 let polling = null;
 async function poll() {
   const v = app.view;
+  if (!FORECAST_TASKS.includes(v)) {
+    app.fetchedAt[v] = Date.now();
+    await app.modules[v].poll();
+    renderHeader();
+    return;
+  }
   const other = v === "coast" ? "turb" : "coast";
   await Promise.all([fetchState(v), fetchLedger(v)]);
   renderHeader();
