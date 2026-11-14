@@ -3,6 +3,9 @@
     .venv/bin/python -m lab.swarm.run --problem coast_water --generations 3 --proposals 4 \
         --memory vector --search openalex [--llm claude_cli] [--warm-from <run_dir>]
     .venv/bin/python -m lab.swarm.run --resume <run_dir> [--generations 5]
+    .venv/bin/python -m lab.swarm.run --mode single_agent ...        (baseline: one model call per proposal)
+    .venv/bin/python -m lab.swarm.run --mode random_mutation ...     (baseline: no model)
+    .venv/bin/python -m lab.swarm.run --warm-from <run_dir> --shuffle-memory ...   (control arm)
 
 A warm run imports the earlier run's findings into its notebook and carries its
 playbook.md into the analyst and engineer prompts; it still starts from the
@@ -44,6 +47,14 @@ def main(argv=None) -> int:
     ap.add_argument("--proposals", type=int, default=4)
     ap.add_argument("--memory", default="vector", choices=["none", "full_context", "vector", "pastdev"])
     ap.add_argument("--search", default="openalex", choices=["none", "openalex", "arxiv", "exa"])
+    ap.add_argument("--search-fallback", default=None,
+                    help="comma-separated backends to try when the first fails or finds nothing "
+                         "(default for openalex: arxiv); 'none' for no fallback")
+    ap.add_argument("--mode", default="swarm", choices=["swarm", "single_agent", "random_mutation"],
+                    help="swarm (default); single_agent: one model call per proposal; "
+                         "random_mutation: no model, constants perturbed or a term dropped")
+    ap.add_argument("--shuffle-memory", action="store_true",
+                    help="control arm: permute the outcomes of the findings imported by --warm-from")
     ap.add_argument("--llm", default="claude_cli")
     ap.add_argument("--analyst-model", default=None)
     ap.add_argument("--engineer-model", default=None)
@@ -62,7 +73,9 @@ def main(argv=None) -> int:
         cfg = json.loads((Path(args.resume) / "config.json").read_text())
         problem = load_problem(cfg["problem"])
         pool, compare, splits = build_evaluator(problem, args.workers)
-        summary = run_lab(problem, pool, compare, llm_backend=cfg.get("llm_backend", args.llm),
+        summary = run_lab(problem, pool, compare, llm_backend=cfg.get("llm_backend") or args.llm,
+                          mode=cfg.get("mode", "swarm"),
+                          search_fallback=cfg["search_chain"][1:] if "search_chain" in cfg else None,
                           memory=cfg.get("memory", args.memory), search=cfg.get("search", args.search),
                           generations=args.generations or cfg["generations"],
                           proposals=cfg["proposals"], seed=cfg["seed"], models=cfg.get("models"),
@@ -85,11 +98,18 @@ def main(argv=None) -> int:
         start_memory = warm
         if (warm / "playbook.md").exists():
             playbook = (warm / "playbook.md").read_text()
+    if args.shuffle_memory and not args.warm_from:
+        raise SystemExit("--shuffle-memory needs --warm-from (it shuffles the imported findings)")
+    fallback = None
+    if args.search_fallback is not None:
+        fallback = () if args.search_fallback.strip() in ("", "none") else \
+            [b.strip() for b in args.search_fallback.split(",") if b.strip()]
     start_source = Path(args.start_source).read_text() if args.start_source else None
     summary = run_lab(problem, pool, compare, llm_backend=args.llm, memory=args.memory, search=args.search,
                       generations=args.generations or 3, proposals=args.proposals, seed=args.seed,
                       run_dir=args.run_dir, models=models or None, max_cost_usd=args.max_cost,
-                      start_source=start_source, start_memory=start_memory, playbook=playbook, splits=splits)
+                      start_source=start_source, start_memory=start_memory, playbook=playbook, splits=splits,
+                      mode=args.mode, shuffle_memory=args.shuffle_memory, search_fallback=fallback)
     print(json.dumps({k: summary[k] for k in ("run_id", "status", "generations_done", "incumbent", "cost_usd")}))
     return 0
 

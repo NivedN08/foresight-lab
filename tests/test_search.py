@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from lab.search import (ArxivSearch, ExaSearch, NoSearch, OpenAlexSearch, SearchError, get_search,
+from lab.search import (ArxivSearch, ChainSearch, ExaSearch, NoSearch, OpenAlexSearch, SearchError, get_search,
                         parse_arxiv, rebuild_abstract)
 
 QUERY = "storm surge inverse barometer effect"
@@ -154,7 +154,8 @@ def test_cache_and_counter(tmp_path):
     a = s.search(QUERY, k=5)
     b = s.search(QUERY, k=5)
     assert a == b and len(rec.requests) == 1
-    assert s.stats() == {"backend": "openalex", "searches": 1, "cache_hits": 1}
+    assert s.stats() == {"backend": "openalex", "searches": 1, "failed": 0, "cache_hits": 1, "retries": 0}
+    assert a[0].backend == "openalex" and b[0].backend == "openalex"
     assert len(list((tmp_path / "openalex").glob("*.json"))) == 1
     s.search(QUERY, k=3)                                   # different k: a new search
     assert s.searches == 2
@@ -173,5 +174,124 @@ def test_http_error_is_clear():
 def test_none_backend_and_registry():
     s = get_search("none")
     assert isinstance(s, NoSearch) and s.search(QUERY) == [] and s.stats()["searches"] == 0
+    assert s.search_detailed(QUERY).backend is None
     with pytest.raises(ValueError, match="unknown search backend"):
         get_search("bing")
+
+
+# ----------------------------------------------------------------- rate limits and fallback
+
+RATE_LIMITED = {"error": "Rate limit exceeded",
+                "message": "Anonymous search is temporarily rate-limited while the search cluster is under "
+                           "elevated load. Please retry in 14s, or use a free API key"}
+
+
+class Sequence429:
+    """Answers 429 `n` times, then the recorded reply."""
+
+    def __init__(self, n, reply=OPENALEX_REPLY, headers=None, body=RATE_LIMITED):
+        self.n, self.reply, self.headers, self.body = n, reply, headers or {}, body
+        self.requests = []
+
+    def __call__(self, request):
+        self.requests.append(request)
+        if len(self.requests) <= self.n:
+            return httpx.Response(429, json=self.body, headers=self.headers)
+        return httpx.Response(200, json=self.reply)
+
+
+def test_429_waits_for_hint_and_retries():
+    slept = []
+    t = Sequence429(2)
+    s = OpenAlexSearch(transport=httpx.MockTransport(t), cache_dir=None, sleep=slept.append)
+    hits = s.search(QUERY)
+    assert len(hits) == 2 and slept == [14.0, 14.0] and len(t.requests) == 3
+    assert s.stats() == {"backend": "openalex", "searches": 1, "failed": 0, "cache_hits": 0, "retries": 2}
+
+
+def test_429_wait_is_capped_and_retry_after_header_wins():
+    slept = []
+    s = OpenAlexSearch(transport=httpx.MockTransport(Sequence429(1, headers={"Retry-After": "90"})),
+                       cache_dir=None, sleep=slept.append)
+    s.search(QUERY)
+    assert slept == [20.0]
+    slept.clear()
+    s2 = OpenAlexSearch(transport=httpx.MockTransport(Sequence429(1, body={"message": "slow down"})),
+                        cache_dir=None, sleep=slept.append)
+    s2.search(QUERY)
+    assert slept == [5.0]                                  # no hint: default wait
+
+
+def test_429_three_times_fails_and_counts_failure(tmp_path):
+    slept = []
+    t = Sequence429(3)
+    s = OpenAlexSearch(transport=httpx.MockTransport(t), cache_dir=tmp_path, sleep=slept.append)
+    with pytest.raises(SearchError, match="HTTP 429"):
+        s.search(QUERY)
+    assert len(t.requests) == 3 and len(slept) == 2
+    assert s.stats() == {"backend": "openalex", "searches": 1, "failed": 1, "cache_hits": 0, "retries": 2}
+    assert not list(tmp_path.rglob("*.json"))              # failures are not cached
+
+
+def test_chain_falls_back_to_arxiv_on_failure():
+    oa = OpenAlexSearch(transport=httpx.MockTransport(Sequence429(99)), cache_dir=None, sleep=lambda s: None)
+    ax = ArxivSearch(transport=httpx.MockTransport(Recorder(ARXIV_REPLY)), cache_dir=None)
+    chain = ChainSearch([oa, ax])
+    out = chain.search_detailed(QUERY, k=5)
+    assert out.backend == "arxiv" and len(out.hits) == 2 and all(h.backend == "arxiv" for h in out.hits)
+    assert out.failures[0]["backend"] == "openalex" and "429" in out.failures[0]["error"]
+    st = chain.stats()
+    assert st["chain"] == ["openalex", "arxiv"] and st["queries"] == 1 and st["queries_without_hits"] == 0
+    assert st["searches"] == 2 and st["failed"] == 1 and st["retries"] == 2
+    assert st["by_backend"]["openalex"]["failed"] == 1 and st["by_backend"]["arxiv"]["failed"] == 0
+
+
+def test_chain_falls_back_on_empty_and_reports_nothing_found():
+    empty = OpenAlexSearch(transport=httpx.MockTransport(Recorder({"results": []})), cache_dir=None)
+    ax = ArxivSearch(transport=httpx.MockTransport(Recorder(ARXIV_REPLY)), cache_dir=None)
+    out = ChainSearch([empty, ax]).search_detailed(QUERY)
+    assert out.backend == "arxiv" and out.failures == [{"backend": "openalex", "error": "no hits"}]
+    ax_empty = ArxivSearch(transport=httpx.MockTransport(Recorder(ARXIV_REPLY.split("<entry>")[0] + "</feed>")),
+                           cache_dir=None)
+    chain = ChainSearch([empty, ax_empty])
+    none = chain.search_detailed(QUERY)
+    assert none.hits == [] and none.backend is None and chain.stats()["queries_without_hits"] == 1
+
+
+def test_get_search_default_chain():
+    s = get_search("openalex", cache_dir=None)
+    assert isinstance(s, ChainSearch) and [b.name for b in s.backends] == ["openalex", "arxiv"] and s.name == "openalex"
+    assert isinstance(get_search("openalex", fallback=(), cache_dir=None), OpenAlexSearch)
+    assert [b.name for b in get_search("arxiv", fallback=["openalex"], cache_dir=None).backends] == ["arxiv", "openalex"]
+    assert isinstance(get_search("arxiv", cache_dir=None), ArxivSearch)
+
+
+def test_openalex_key_goes_in_header_not_url(monkeypatch):
+    monkeypatch.setenv("OPENALEX_API_KEY", "oa-secret")
+    monkeypatch.setenv("OPENALEX_MAILTO", "lab@example.org")
+    rec = Recorder(OPENALEX_REPLY)
+    OpenAlexSearch(transport=httpx.MockTransport(rec), cache_dir=None).search(QUERY)
+    req = rec.requests[0]
+    assert req.headers["authorization"] == "Bearer oa-secret"
+    assert "oa-secret" not in str(req.url) and req.url.params["mailto"] == "lab@example.org"
+    monkeypatch.delenv("OPENALEX_API_KEY")
+    monkeypatch.delenv("OPENALEX_MAILTO")
+    rec2 = Recorder(OPENALEX_REPLY)
+    OpenAlexSearch(transport=httpx.MockTransport(rec2), cache_dir=None).search(QUERY)
+    assert "authorization" not in rec2.requests[0].headers and "mailto" not in rec2.requests[0].url.params
+
+
+def test_old_cache_files_without_backend_still_load(tmp_path):
+    s = OpenAlexSearch(transport=httpx.MockTransport(Recorder(OPENALEX_REPLY)), cache_dir=tmp_path)
+    path = tmp_path / "openalex" / f"{s._key(QUERY, 5, None)}.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"hits": [{"title": "t", "url": "u", "year": 2020, "text": "x"}]}))
+    out = s.search_detailed(QUERY, k=5)
+    assert out.from_cache and out.hits[0].backend == "openalex" and s.searches == 0
+
+
+def test_exa_retries_429_too():
+    slept = []
+    s = ExaSearch(api_key="k", transport=httpx.MockTransport(Sequence429(1, reply=EXA_REPLY)), cache_dir=None,
+                  sleep=slept.append)
+    assert len(s.search(QUERY)) == 2 and slept == [14.0]

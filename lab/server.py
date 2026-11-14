@@ -137,6 +137,26 @@ def records(task: str, model: str | None = None, kind: str | None = None, statio
     return JSONResponse({"now": hi, "records": slim}, headers={"Cache-Control": "no-store"})
 
 
+LAB_RUNS = RUNS / "lab"   # research-lab runs: runs/lab/<problem>/<run_id>/
+
+
+@app.get("/api/lab/runs")
+def lab_runs():
+    """Every research-lab run, newest first, read from each run's summary.json."""
+    from lab.swarm.runs_index import list_runs
+    return JSONResponse({"runs": list_runs(LAB_RUNS)}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/lab/runs/{problem}/{run_id}")
+def lab_run(problem: str, run_id: str):
+    """One run's summary.json, findings and incumbent source."""
+    from lab.swarm.runs_index import run_detail
+    detail = run_detail(LAB_RUNS, problem, run_id)
+    if detail is None:
+        raise HTTPException(404, f"no lab run {problem}/{run_id}")
+    return JSONResponse(detail, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/")
 def index():
     return FileResponse(DASHBOARD / "index.html")

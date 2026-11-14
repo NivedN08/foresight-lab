@@ -1,12 +1,18 @@
 """The research loop: generations of concurrent proposals against one incumbent.
 
-See docs/swarm.md. One proposal = failure digest -> analyst -> closed-book ->
-scout (search) -> engineer (+ one repair) -> evaluate -> compare -> decide (code)
--> finding. At the end of a generation the best accepted proposal becomes the
-incumbent. Everything is written under the run directory as it happens.
+See docs/swarm.md. In the default "swarm" mode one proposal is: failure digest
+-> analyst -> closed-book -> scout (search) -> engineer (+ one repair) ->
+evaluate -> compare -> decide (code). Two baselines share everything from
+"evaluate" on: "single_agent" (one model call writes the candidate) and
+"random_mutation" (no model: constants perturbed or one term dropped).
+
+At the end of a generation the best accepted proposal becomes the incumbent,
+then every proposal's finding is written once, saying whether it became the
+incumbent and whether it duplicates another proposal of the same generation.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import math
@@ -22,18 +28,22 @@ from typing import Any, Callable
 import numpy as np
 
 from lab.core.timeutil import to_iso, utcnow
-from lab.llm import Backend, Budget, LLMError, complete, extract_code, get_backend
-from lab.memory import Finding, get_memory, load_findings, read_jsonl
+from lab.llm import Backend, Budget, complete, extract_code, get_backend
+from lab.memory import Finding, get_memory, load_findings, read_jsonl, shuffle_outcomes
 from lab.sandbox.lint import lint
 from lab.search import get_search
 from lab.swarm import prompts
 from lab.swarm.decide import Thresholds, decide, relative_improvement
 from lab.swarm.digest import failure_digest, worst_groups
+from lab.swarm.mutate import mutate
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODELS = {"analyst": "haiku", "closed_book": "haiku", "scout": "haiku", "judge": "haiku",
-                  "engineer": "sonnet", "playbook": "haiku"}
+                  "engineer": "sonnet", "single_agent": "sonnet", "playbook": "haiku"}
+MODES = ("swarm", "single_agent", "random_mutation")
+RELEVANCE = ("domain", "method", "unrelated")
 MAX_LOGGED_REPLY = 20_000
+IDENTICAL_REASON = "rejected: candidate is identical to the incumbent (ignoring whitespace, comments and `name`)"
 
 
 class CostCapReached(RuntimeError):
@@ -105,6 +115,50 @@ def parse_json(text: str) -> dict | None:
     return None
 
 
+def normalized(source: str) -> str:
+    """What "the same candidate" means: the syntax tree without comments, formatting
+    or the Forecaster's `name` attribute (falls back to collapsed whitespace if the
+    source does not parse)."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return " ".join(source.split())
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "Forecaster":
+            node.body = [n for n in node.body
+                         if not (isinstance(n, (ast.Assign, ast.AnnAssign))
+                                 and any(isinstance(t, ast.Name) and t.id == "name"
+                                         for t in (n.targets if isinstance(n, ast.Assign) else [n.target])))]
+    return ast.dump(tree)
+
+
+def change_comment(source: str | None) -> str | None:
+    """The text of a leading '# Change: ...' comment, if the file starts with one."""
+    if not source:
+        return None
+    for line in source.splitlines():
+        if line.strip():
+            m = re.match(r"\s*#\s*change\s*:\s*(.+)", line, re.I)
+            return m.group(1).strip() if m else None
+    return None
+
+
+def claim_text(claim: dict) -> str:
+    def g(k):
+        return str(claim.get(k) or "").strip().rstrip(".")
+    text = g("technique") or "unnamed change"
+    if g("change"):
+        text += f": {g('change')}."
+    elif g("rule"):
+        text += f": {g('rule')}."
+    else:
+        text += "."
+    for label, key in (("Inputs", "inputs"), ("Rule", "rule"), ("Leads", "leads"), ("Expected", "expected_effect")):
+        if g(key) and not (key == "rule" and not g("change")):
+            text += f" {label}: {g(key)}."
+    return text
+
+
 def mean_loss(result, window: str) -> float:
     s = (getattr(result, "summary", None) or {}).get(window) or {}
     if "mean_loss" in s and s["mean_loss"] is not None:
@@ -123,14 +177,29 @@ def _paired(p) -> dict | None:
             "diff_high": p.diff.high, "p_a_better": p.p_a_better, "n": p.n}
 
 
+def _same_losses(a, b) -> bool:
+    if a is None or b is None or not a.ok or not b.ok:
+        return False
+    for w in ("select", "confirm"):
+        x, y = (a.losses or {}).get(w), (b.losses or {}).get(w)
+        if x is None or y is None or not np.array_equal(np.asarray(x), np.asarray(y), equal_nan=True):
+            return False
+    return True
+
+
 class Lab:
     def __init__(self, problem, evaluator, compare: Callable, *, llm_backend, memory, search,
                  generations: int, proposals: int, seed: int, run_dir, models, max_cost_usd,
                  start_source, start_memory, playbook, resume: bool, splits, thresholds: Thresholds,
-                 search_k: int, recall_k: int, runs_root):
+                 search_k: int, recall_k: int, runs_root, mode: str = "swarm", shuffle_memory: bool = False,
+                 search_fallback=None):
+        if mode not in MODES:
+            raise ValueError(f"unknown mode {mode!r}; choose from {MODES}")
         self.problem = problem
         self.evaluator = evaluator
         self.compare = compare
+        self.mode = mode
+        self.shuffle_memory = bool(shuffle_memory)
         self.generations = int(generations)
         self.proposals = int(proposals)
         self.seed = int(seed)
@@ -140,7 +209,10 @@ class Lab:
         self.search_k = search_k
         self.recall_k = recall_k
         self.playbook_in = playbook
-        self.backend: Backend = llm_backend if isinstance(llm_backend, Backend) else get_backend(llm_backend)
+        if mode == "random_mutation":
+            self.backend = None
+        else:
+            self.backend = llm_backend if isinstance(llm_backend, Backend) else get_backend(llm_backend)
         self.budget = Budget()
         self._lock = threading.Lock()
         self._splits = splits
@@ -161,8 +233,12 @@ class Lab:
 
         self.memory = memory if not isinstance(memory, str) else get_memory(memory, path=self.run_dir / "memory.jsonl")
         self.memory_name = getattr(self.memory, "name", type(self.memory).__name__)
-        self.searcher = search if not isinstance(search, str) else get_search(search)
+        if mode != "swarm":
+            search = "none"           # the baselines never search
+        self.searcher = search if not isinstance(search, str) else get_search(search, fallback=search_fallback)
         self.search_name = getattr(self.searcher, "name", type(self.searcher).__name__)
+        self.search_chain = [getattr(b, "name", "?") for b in getattr(self.searcher, "backends", [])] \
+            or [self.search_name]
         self.search_on = self.search_name != "none"
 
         self.strategies = list(prompts.STRATEGIES)
@@ -182,8 +258,8 @@ class Lab:
 
     # ------------------------------------------------------------------ logging
 
-    def event(self, kind: str, **fields) -> None:
-        row = {"time": to_iso(utcnow()), "event": kind, **fields}
+    def event(self, event_name: str, /, **fields) -> None:
+        row = {"time": to_iso(utcnow()), "event": event_name, **fields}
         line = _dumps(row)
         with self._lock:
             with (self.run_dir / "events.jsonl").open("a") as fh:
@@ -209,12 +285,15 @@ class Lab:
         return self._splits
 
     def llm(self, role: str, system: str, prompt: str, ctx: dict) -> str:
+        if self.backend is None:
+            raise RuntimeError(f"no LLM in mode {self.mode!r}")
         if self.over_cap():
             raise CostCapReached(f"cost cap ${self.max_cost_usd} reached (spent ${self.cost():.4f})")
         t0 = time.monotonic()
         try:
             r = complete(prompt, system=system, model=self.models.get(role), backend=self.backend,
-                         budget=self.budget, label=role, max_tokens=8000 if role == "engineer" else 2000)
+                         budget=self.budget, label=role,
+                         max_tokens=8000 if role in ("engineer", "single_agent") else 2000)
         except Exception as e:
             self.event("llm_error", role=role, error=f"{type(e).__name__}: {e}", **ctx,
                        duration_s=time.monotonic() - t0)
@@ -242,11 +321,20 @@ class Lab:
                    protections=list(res.protections or []), summary=res.summary, **ctx)
         return res
 
+    def counts(self) -> dict:
+        fs = read_jsonl(self.run_dir / "findings.jsonl")
+        return {"findings_total": len(fs),
+                "accepted_total": sum(1 for f in fs if f.accepted and not f.supersedes),
+                "became_incumbent_total": sum(1 for f in fs if f.became_incumbent),
+                "duplicates_total": sum(1 for f in fs if f.duplicate_of),
+                "claims_from_search": sum(1 for f in fs if f.origin == "search"),
+                "accepted_from_search": sum(1 for f in fs if f.origin == "search" and f.accepted)}
+
     def write_summary(self, incumbent_hash: str, curve: list, done: int, extra: dict | None = None) -> None:
         last = curve[-1] if curve else {}
         snap = self.budget.snapshot()
         summary = {
-            "run_id": self.run_id, "problem": self.problem.name, "status": self.status,
+            "run_id": self.run_id, "problem": self.problem.name, "mode": self.mode, "status": self.status,
             "started_at": self.started_at, "updated_at": to_iso(utcnow()),
             "generations_planned": self.generations, "generations_done": done,
             "proposals_per_generation": self.proposals,
@@ -259,8 +347,7 @@ class Lab:
             "search": self.searcher.stats() if hasattr(self.searcher, "stats") else {},
             "recall": dict(self.recall_stats),
             "memory": self.memory_name,
-            "accepted_total": self._count_accepted(),
-            "findings_total": len(read_jsonl(self.run_dir / "findings.jsonl")),
+            **self.counts(),
         }
         merged = {k: dict(v) for k, v in (self.prev.get("llm_by_role_all") or {}).items()}
         for role, row in snap["by_label"].items():
@@ -272,9 +359,6 @@ class Lab:
             summary.update(extra)
         self._write("summary.json", json.dumps(_scrub(summary), default=_jsonable, indent=1))
 
-    def _count_accepted(self) -> int:
-        return sum(1 for f in read_jsonl(self.run_dir / "findings.jsonl") if f.accepted and not f.supersedes)
-
     def record_finding(self, finding: Finding, ctx: dict) -> None:
         with self._lock:
             with (self.run_dir / "findings.jsonl").open("a") as fh:
@@ -284,15 +368,20 @@ class Lab:
         except Exception as e:
             self.event("memory_error", finding=finding.id, error=f"{type(e).__name__}: {e}", **ctx)
 
-    # ------------------------------------------------------------------ one proposal
+    # ------------------------------------------------------------------ proposals
 
-    def proposal(self, gen: int, idx: int, incumbent_src: str, incumbent_res, digest: str,
-                 worst: list[str]) -> dict:
+    def proposal(self, gen, idx, incumbent_src, incumbent_res, digest, worst) -> dict:
+        if self.mode == "single_agent":
+            return self._proposal_single(gen, idx, incumbent_src, incumbent_res, digest)
+        if self.mode == "random_mutation":
+            return self._proposal_mutation(gen, idx, incumbent_src, incumbent_res)
+        return self._proposal_swarm(gen, idx, incumbent_src, incumbent_res, digest, worst)
+
+    def _proposal_swarm(self, gen, idx, incumbent_src, incumbent_res, digest, worst) -> dict:
         ctx = {"generation": gen, "proposal": idx}
-        out: dict[str, Any] = {"generation": gen, "proposal": idx, "accepted": False}
         strategy = self.strategies[((gen - 1) * self.proposals + idx) % len(self.strategies)]
-        out["strategy"] = strategy
-        short = f"{self.problem.title} Target: {self.problem.target_key}. Loss: {self.problem.loss_name}."
+        out: dict[str, Any] = {"generation": gen, "proposal": idx, "strategy": strategy}
+        describe = self.problem.describe()
 
         # b. recall + analyst
         query = f"{strategy} {self.problem.title} " + " ".join(worst)
@@ -303,8 +392,7 @@ class Lab:
             self.recall_stats["chars"] += rec.chars
         self.event("recall", query=query, n=len(rec.findings), ids=[f.id for f in rec.findings],
                    chars=rec.chars, latency_s=rec.latency_s, **ctx)
-        sys_, p = prompts.analyst(self.problem.describe(), incumbent_src, digest, rec.text, strategy,
-                                  self.playbook_in)
+        sys_, p = prompts.analyst(describe, incumbent_src, digest, rec.text, strategy, self.playbook_in)
         reply = self.llm("analyst", sys_, p, ctx)
         a = parse_json(reply)
         if a is None:
@@ -316,57 +404,114 @@ class Lab:
         out.update(diagnosis=a.get("diagnosis"), hypothesis=hypothesis, knowledge_gap=gap)
 
         # c. closed book
-        sys_, p = prompts.closed_book(short, gap, hypothesis)
+        sys_, p = prompts.closed_book(describe, incumbent_src, gap, hypothesis)
         cb = parse_json(self.llm("closed_book", sys_, p, ctx)) or {}
         techniques = [t for t in (cb.get("techniques") or []) if isinstance(t, dict)]
         if not techniques:
             self.event("parse_fallback", role="closed_book", **ctx)
 
         # d. scout
-        claim, origin, known = None, "closed_book", None
+        claim, origin, known, backend, relevance = None, "closed_book", None, None, None
         if self.search_on:
+            hits, failures, from_cache = [], [], False
             try:
-                hits = self.searcher.search(gap, k=self.search_k)
+                if hasattr(self.searcher, "search_detailed"):
+                    o = self.searcher.search_detailed(gap, k=self.search_k)
+                    hits, backend, failures, from_cache = o.hits, o.backend, o.failures, o.from_cache
+                else:
+                    hits = self.searcher.search(gap, k=self.search_k)
+                    backend = getattr(self.searcher, "name", None) if hits else None
             except Exception as e:
-                self.event("search_error", query=gap, error=f"{type(e).__name__}: {e}", **ctx)
-                hits = []
-            self.event("search", query=gap, n=len(hits), hits=[{"title": h.title, "url": h.url, "year": h.year}
-                                                                for h in hits], **ctx)
+                failures = [{"backend": self.search_name, "error": f"{type(e).__name__}: {e}"}]
+            for fl in failures:
+                self.event("search_error", query=gap, backend=fl.get("backend"), error=fl.get("error"), **ctx)
+            self.event("search", query=gap, n=len(hits), search_backend=backend, from_cache=from_cache,
+                       failures=failures, hits=[{"title": h.title, "url": h.url, "year": h.year} for h in hits],
+                       **ctx)
             if hits:
-                sys_, p = prompts.scout(short, hypothesis, gap, [h.to_dict() for h in hits])
+                sys_, p = prompts.scout(describe, incumbent_src, hypothesis, gap, [h.to_dict() for h in hits])
                 c = parse_json(self.llm("scout", sys_, p, ctx))
-                if c and c.get("technique"):
-                    claim, origin = c, "search"
+                rel = str((c or {}).get("source_relevance") or "").strip().lower() or None
+                if rel is not None and rel not in RELEVANCE:
+                    rel = None
+                usable = bool(c and c.get("technique") and c.get("chosen") is not None and rel != "unrelated")
+                self.event("scout", usable=usable, source_relevance=rel, chosen=(c or {}).get("chosen"),
+                           relevance=(c or {}).get("relevance"), **ctx)
+                if usable:
+                    claim, origin, relevance = c, "search", rel
                     sys_, p = prompts.judge(c, techniques)
                     j = parse_json(self.llm("judge", sys_, p, ctx)) or {}
                     kc = j.get("known_closed_book")
                     known = kc if isinstance(kc, bool) else None
                 else:
-                    self.event("parse_fallback", role="scout", **ctx)
+                    self.event("scout_no_usable_hit", source_relevance=rel, **ctx)
         if claim is None:
+            backend = None
             claim = dict(techniques[0]) if techniques else \
-                {"technique": "analyst hypothesis", "rule": hypothesis, "expected_effect": ""}
+                {"technique": "analyst hypothesis", "change": hypothesis}
             claim.setdefault("source_title", "")
             claim.setdefault("source_url", "")
-        claim_text = f"{str(claim.get('technique') or '').strip()}: {str(claim.get('rule') or '').strip().rstrip('.')}."
-        if str(claim.get("expected_effect") or "").strip():
-            claim_text += f" Expected: {str(claim['expected_effect']).strip().rstrip('.')}."
-        out.update(claim=claim, origin=origin, known_closed_book=known)
-        self.event("claim", claim=claim, origin=origin, known_closed_book=known, **ctx)
+        text = claim_text(claim)
+        out.update(claim=claim, origin=origin, known_closed_book=known, search_backend=backend,
+                   source_relevance=relevance)
+        self.event("claim", claim=claim, claim_text=text, origin=origin, known_closed_book=known,
+                   search_backend=backend, source_relevance=relevance, **ctx)
 
         # e. engineer (+ one repair)
-        res, source, sel, conf = None, None, None, None
-        error = None
-        sys_, p = prompts.engineer(self.problem.describe(), incumbent_src, claim_text, hypothesis,
-                                   self.problem.target_key, self.playbook_in)
+        sys_, p = prompts.engineer(describe, incumbent_src, text, hypothesis, self.problem.target_key,
+                                   self.playbook_in)
         source = extract_code(self.llm("engineer", sys_, p, ctx))
-        repaired = False
+
+        def repair(src, error):
+            sys2, p2 = prompts.repair(src or "(no code)", error, self.problem.target_key)
+            return extract_code(self.llm("engineer", sys2, p2, {**ctx, "repair": True}))
+
+        return self._test(out, ctx, source, incumbent_src, incumbent_res, repair=repair,
+                          finding=dict(claim=text, origin=origin, known_closed_book=known,
+                                       source_title=str(claim.get("source_title") or ""),
+                                       source_url=str(claim.get("source_url") or ""),
+                                       search_backend=backend, source_relevance=relevance))
+
+    def _proposal_single(self, gen, idx, incumbent_src, incumbent_res, digest) -> dict:
+        ctx = {"generation": gen, "proposal": idx}
+        out: dict[str, Any] = {"generation": gen, "proposal": idx}
+        sys_, p = prompts.single_agent(self.problem.describe(), incumbent_src, digest, self.problem.target_key)
+        source = extract_code(self.llm("single_agent", sys_, p, ctx))
+        text = change_comment(source) or "single-agent change (no description given)"
+        return self._test(out, ctx, source, incumbent_src, incumbent_res, repair=None,
+                          finding=dict(claim=f"{text.rstrip('.')}.", origin="single_agent"))
+
+    def _proposal_mutation(self, gen, idx, incumbent_src, incumbent_res) -> dict:
+        ctx = {"generation": gen, "proposal": idx}
+        out: dict[str, Any] = {"generation": gen, "proposal": idx}
+        rng = random.Random(self.seed * 1_000_003 + gen * 1_009 + idx)
+        m = mutate(incumbent_src, rng)
+        if m is None:
+            self.event("mutation_failed", reason="no lint-clean mutation found", **ctx)
+            source, text = None, "random mutation: none found"
+        else:
+            self.event("mutation", kind=m.kind, description=m.description, **ctx)
+            source, text = m.source, f"Random mutation ({m.kind}): {m.description}"
+        return self._test(out, ctx, source, incumbent_src, incumbent_res, repair=None,
+                          finding=dict(claim=text, origin="random_mutation"))
+
+    # ------------------------------------------------------------------ shared tail
+
+    def _test(self, out: dict, ctx: dict, source, incumbent_src, incumbent_res, *, repair, finding: dict) -> dict:
+        """Lint, identical-to-incumbent check, evaluate (+ one repair if `repair`),
+        compare, decide. Returns the outcome with an unrecorded Finding."""
+        res, sel, conf, error = None, None, None, None
+        repaired, identical = False, False
         while True:
             if source is None:
-                error, lint_msgs = "the reply contained no Python code block that parses", []
+                error, lint_msgs = "no candidate code (the reply had no Python block that parses)", []
             else:
                 lint_msgs = lint(source)
                 error = ("lint: " + "; ".join(lint_msgs)) if lint_msgs else None
+            if source is not None and not lint_msgs and normalized(source) == normalized(incumbent_src):
+                identical = True
+                self.event("identical_to_incumbent", hash=source_hash(source), repaired=repaired, **ctx)
+                break
             if lint_msgs or source is None:
                 self.event("lint_failed", hash=source_hash(source) if source else None, lint=lint_msgs,
                            error=error, repaired=repaired, **ctx)
@@ -374,41 +519,81 @@ class Lab:
                 res = self.evaluate(source, {**ctx, "repaired": repaired})
                 error = None if res.ok else (res.error or "evaluation failed") + \
                     (("\nlint: " + "; ".join(res.lint)) if res.lint else "")
-            if error is None or repaired:
+            if error is None or repaired or repair is None:
                 break
             repaired = True
-            sys_, p = prompts.repair(source or "(no code)", error, self.problem.target_key)
-            fixed = extract_code(self.llm("engineer", sys_, p, {**ctx, "repair": True}))
-            source = fixed
-        ok = bool(res is not None and res.ok and error is None)
-        out.update(hash=source_hash(source) if source else None, ok=ok, error=error, repaired=repaired)
-
-        # f. compare
+            source = repair(source, error)
+        ok = bool(res is not None and res.ok and error is None and not identical)
         if ok:
             sel = self.compare(res, incumbent_res, self.splits, "select")
             conf = self.compare(res, incumbent_res, self.splits, "confirm")
-
-        # g. decide
-        accepted, reason = decide(ok, sel, conf, self.th)
+        if identical:
+            accepted, reason = False, IDENTICAL_REASON
+        else:
+            accepted, reason = decide(ok, sel, conf, self.th)
         rel = relative_improvement(sel) if sel is not None else None
-        out.update(accepted=accepted, reason=reason, select=_paired(sel), confirm=_paired(conf),
-                   relative_improvement=rel, source=source, result=res)
-        self.event("decision", hash=out["hash"], accepted=accepted, reason=reason, select=_paired(sel),
-                   confirm=_paired(conf), relative_improvement=rel, error=error, **ctx)
-
-        # h. finding
-        f = Finding(claim=claim_text[:600], problem=self.problem.name, generation=gen,
-                    source_title=str(claim.get("source_title") or ""), source_url=str(claim.get("source_url") or ""),
-                    origin=origin, known_closed_book=known, accepted=accepted,
+        h = source_hash(source) if source else None
+        cc = change_comment(source)
+        out.update(hash=h, ok=ok, error=error, repaired=repaired, identical=identical, accepted=accepted,
+                   reason=reason, select=_paired(sel), confirm=_paired(conf), relative_improvement=rel,
+                   source=source, result=res, change_comment=cc)
+        self.event("decision", hash=h, accepted=accepted, reason=reason, select=_paired(sel),
+                   confirm=_paired(conf), relative_improvement=rel, error=error, identical=identical,
+                   change_comment=cc, **ctx)
+        f = Finding(problem=self.problem.name, generation=ctx["generation"], accepted=accepted,
                     select_delta=sel.diff.mean if sel else None, select_low=sel.diff.low if sel else None,
-                    select_high=sel.diff.high if sel else None, confirm_delta=conf.diff.mean if conf else None)
-        if not ok:
+                    select_high=sel.diff.high if sel else None, confirm_delta=conf.diff.mean if conf else None,
+                    **{**finding, "claim": finding["claim"][:600]})
+        if identical:
+            f.text = f.render() + " Not measured: the candidate was identical to the incumbent."
+        elif not ok:
             f.text = f.render() + f" Failure: {str(error)[:300]}"
         elif not accepted:
             f.text = f.render() + f" Why rejected: {reason[len('rejected: '):]}"
         out["finding"] = f
-        self.record_finding(f, ctx)
         return out
+
+    # ------------------------------------------------------------------ generation
+
+    def resolve_generation(self, gen: int, outcomes: list[dict]) -> dict | None:
+        """Pick the new incumbent, mark duplicates, and write each finding once."""
+        outcomes = sorted(outcomes, key=lambda o: o["proposal"])
+        firsts: list[dict] = []
+        for o in outcomes:
+            o["duplicate_of"] = None
+            if o.get("hash") is None:
+                continue
+            twin = next((d for d in firsts if d["hash"] == o["hash"] or _same_losses(d.get("result"), o.get("result"))),
+                        None)
+            if twin is not None:
+                o["duplicate_of"] = twin
+            else:
+                firsts.append(o)
+        accepted = [o for o in outcomes if o.get("accepted")]
+        best = min(accepted, key=lambda o: (o["select"]["diff_mean"], o["proposal"])) if accepted else None
+        for o in outcomes:
+            f: Finding = o["finding"]
+            f.became_incumbent = (o is best) if o.get("accepted") else False
+            twin = o.get("duplicate_of")
+            f.duplicate_of = twin["finding"].id if twin else None
+            extra = ""
+            if o.get("accepted") and o is not best:
+                extra += (f" Passed the test but was not adopted: proposal {best['proposal']} won generation {gen};"
+                          " not tested on top of it.")
+            if twin is not None:
+                same = "same code" if twin["hash"] == o["hash"] else "identical predictions"
+                extra += f" Duplicate of proposal {twin['proposal']} ({same})."
+            base = f.text.split("] ", 1)[1] if f.text.startswith("[") else f.text
+            f.text = f"[{f.verdict()}] " + base + extra
+            self.record_finding(f, {"generation": gen, "proposal": o["proposal"]})
+            if o.get("accepted") and o is not best:
+                self.event("not_adopted", generation=gen, proposal=o["proposal"], hash=o["hash"],
+                           by_hash=best["hash"], finding=f.id, duplicate_of=f.duplicate_of)
+        self.event("generation_resolved", generation=gen,
+                   findings=[{"proposal": o["proposal"], "finding": o["finding"].id, "accepted": o.get("accepted"),
+                              "became_incumbent": o["finding"].became_incumbent,
+                              "duplicate_of": o["finding"].duplicate_of} for o in outcomes])
+        return best
 
     # ------------------------------------------------------------------ the run
 
@@ -420,25 +605,31 @@ class Lab:
             self.event("run_resume", generations_done=done, generations_planned=self.generations)
         else:
             incumbent_src = self.start_source or self.problem.seed_source()
-            config = {"run_id": self.run_id, "problem": self.problem.name, "generations": self.generations,
-                      "proposals": self.proposals, "seed": self.seed, "llm_backend": self.backend.name,
+            config = {"run_id": self.run_id, "problem": self.problem.name, "mode": self.mode,
+                      "generations": self.generations, "proposals": self.proposals, "seed": self.seed,
+                      "llm_backend": self.backend.name if self.backend else None,
                       "models": self.models, "memory": self.memory_name, "search": self.search_name,
+                      "search_chain": self.search_chain,
                       "max_cost_usd": self.max_cost_usd, "thresholds": asdict(self.th),
                       "search_k": self.search_k, "recall_k": self.recall_k,
                       "start_source_given": self.start_source is not None,
                       "start_memory": str(self.start_memory) if isinstance(self.start_memory, (str, Path))
                       else (f"{len(self.start_memory)} findings" if self.start_memory else None),
+                      "shuffle_memory": self.shuffle_memory,
                       "playbook_given": bool(self.playbook_in), "started_at": self.started_at}
             self._write("config.json", json.dumps(config, indent=1, default=_jsonable))
             if self.playbook_in:
                 self._write("playbook_in.md", self.playbook_in)
             imported = load_findings(self.start_memory)
+            if self.shuffle_memory and imported:
+                imported = shuffle_outcomes(imported, self.seed)
             for f in imported:
                 try:
                     self.memory.add(f)
                 except Exception as e:
                     self.event("memory_error", finding=f.id, error=f"{type(e).__name__}: {e}")
-            self.event("run_start", run_dir=str(self.run_dir), imported_findings=len(imported))
+            self.event("run_start", run_dir=str(self.run_dir), mode=self.mode, imported_findings=len(imported),
+                       shuffled=self.shuffle_memory and bool(imported))
         if self.resume and (self.run_dir / "playbook_in.md").exists() and not self.playbook_in:
             self.playbook_in = (self.run_dir / "playbook_in.md").read_text()
 
@@ -478,31 +669,16 @@ class Lab:
                     except Exception as e:
                         self.event("proposal_failed", generation=gen, proposal=i,
                                    error=f"{type(e).__name__}: {e}")
-            accepted = [o for o in outcomes if o.get("accepted")]
-            if accepted:
-                best = min(accepted, key=lambda o: o["select"]["diff_mean"])
-                for o in accepted:
-                    if o is best:
-                        continue
-                    old = o["finding"]
-                    note = Finding(claim=old.claim, problem=old.problem, generation=gen,
-                                   source_title=old.source_title, source_url=old.source_url, origin=old.origin,
-                                   known_closed_book=old.known_closed_book, accepted=True,
-                                   select_delta=old.select_delta, select_low=old.select_low,
-                                   select_high=old.select_high, confirm_delta=old.confirm_delta,
-                                   supersedes=old.id)
-                    note.text = old.text + (f" Passed the test but was not adopted: proposal {best['proposal']} "
-                                            f"won generation {gen}; this change has not been tested on top of it.")
-                    self.record_finding(note, {"generation": gen, "proposal": o["proposal"]})
-                    self.event("superseded_this_generation", generation=gen, proposal=o["proposal"],
-                               hash=o["hash"], by_hash=best["hash"], finding=old.id, note=note.id)
+            best = self.resolve_generation(gen, outcomes)
+            n_accepted = sum(1 for o in outcomes if o.get("accepted"))
+            if best is not None:
                 incumbent_src, inc_res, inc_hash = best["source"], best["result"], best["hash"]
                 self._write("incumbent.py", incumbent_src)
                 self.event("new_incumbent", generation=gen, hash=inc_hash, proposal=best["proposal"],
-                           select=best["select"], confirm=best["confirm"])
+                           finding=best["finding"].id, select=best["select"], confirm=best["confirm"])
             curve.append({"generation": gen, "select": mean_loss(inc_res, "select"),
                           "confirm": mean_loss(inc_res, "confirm"), "incumbent_hash": inc_hash,
-                          "accepted": len(accepted), "proposals": len(outcomes), "cost_usd": self.cost(),
+                          "accepted": n_accepted, "proposals": len(outcomes), "cost_usd": self.cost(),
                           "evaluations": self.evals_offset + self.evaluations,
                           "wall_s": self.wall_offset + time.monotonic() - self.t0})
             done = gen
@@ -510,7 +686,7 @@ class Lab:
                 self.status = "stopped_cost_cap"
                 self.event("cost_cap", generation=gen, cost_usd=self.cost(), cap=self.max_cost_usd)
             self.write_summary(inc_hash, curve, done)
-            self.event("generation_end", generation=gen, accepted=len(accepted), incumbent_hash=inc_hash)
+            self.event("generation_end", generation=gen, accepted=n_accepted, incumbent_hash=inc_hash)
             if self.status == "stopped_cost_cap":
                 break
 
@@ -522,23 +698,31 @@ class Lab:
         return json.loads((self.run_dir / "summary.json").read_text())
 
     def write_playbook(self) -> None:
+        """A model-written playbook in swarm mode; the baselines (and a run stopped by
+        the cost cap, or a failed call) get a plain list of measured findings."""
         findings = read_jsonl(self.run_dir / "findings.jsonl")
         block = "\n".join(f"- {f.text}" for f in findings)
         text = None
-        if self.status != "stopped_cost_cap" and findings:
+        if self.mode == "swarm" and self.status != "stopped_cost_cap" and findings:
             try:
                 sys_, p = prompts.playbook(self.problem.name, block[:30_000], self.playbook_in)
                 text = self.llm("playbook", sys_, p, {"stage": "end_of_run"}).strip() or None
             except Exception as e:
                 self.event("playbook_fallback", error=f"{type(e).__name__}: {e}")
                 text = None
-        if text is None:   # mechanical fallback: no LLM, just the measured findings
-            acc = [f for f in findings if f.accepted and not f.supersedes]
-            rej = [f for f in findings if not f.accepted]
-            lines = [f"# Playbook for {self.problem.name} (written without a model: list of measured findings)", "",
-                     "## Accepted"] + [f"- {f.claim} (select delta {f.select_delta})" for f in acc] + \
-                    ["", "## Rejected or failed"] + [f"- {f.claim} (select delta {f.select_delta})" for f in rej]
-            text = "\n".join(lines)
+        if text is None:
+            def line(f):
+                return f"- {f.claim} (select delta {f.select_delta})"
+            adopted = [f for f in findings if f.became_incumbent]
+            passed = [f for f in findings if f.accepted and not f.became_incumbent and not f.supersedes]
+            measured = [f for f in findings if not f.accepted and f.select_delta is not None]
+            failed = [f for f in findings if not f.accepted and f.select_delta is None]
+            text = "\n".join(
+                [f"# Playbook for {self.problem.name} (written without a model: list of measured findings)", "",
+                 "## Became the incumbent"] + [line(f) for f in adopted]
+                + ["", "## Passed but not adopted"] + [line(f) for f in passed]
+                + ["", "## Measured and rejected"] + [line(f) for f in measured]
+                + ["", "## Did not run or not measured (says nothing about the idea)"] + [line(f) for f in failed])
         self._write("playbook.md", text + "\n")
 
 
@@ -546,18 +730,22 @@ def run_lab(problem, evaluator, compare, *, llm_backend="claude_cli", memory="ve
             generations=5, proposals=4, seed=0, run_dir=None, models=None, max_cost_usd=None,
             start_source=None, start_memory=None, playbook=None, resume=False, splits=None,
             p_min=0.95, min_rel_improvement=0.003, confirm_max_diff=0.0, search_k=5, recall_k=8,
-            runs_root=None) -> dict:
+            runs_root=None, mode="swarm", shuffle_memory=False, search_fallback=None) -> dict:
     """Run the research lab; returns the final summary dict (also in <run_dir>/summary.json).
 
     `evaluator` needs `submit(source) -> Future[EvalResult]`; `compare(a, b, splits, window)`
     returns a PairedResult (a = candidate, b = incumbent). `llm_backend`, `memory` and `search`
-    take a name or a ready object. `splits` defaults to `evaluator.splits`, else
-    `problem.splits()`. `resume=True` continues the run in `run_dir` after its last finished
-    generation."""
+    take a name or a ready object; `search_fallback` is the chain after the first backend
+    (None: lab.search.DEFAULT_FALLBACK). `mode` is "swarm", "single_agent" or
+    "random_mutation". `shuffle_memory` permutes the outcomes of the findings imported
+    from `start_memory` (the shuffled-notebook control). `splits` defaults to
+    `evaluator.splits`, else `problem.splits()`. `resume=True` continues the run in
+    `run_dir` after its last finished generation."""
     lab = Lab(problem, evaluator, compare, llm_backend=llm_backend, memory=memory, search=search,
               generations=generations, proposals=proposals, seed=seed, run_dir=run_dir, models=models,
               max_cost_usd=max_cost_usd, start_source=start_source, start_memory=start_memory,
               playbook=playbook, resume=resume, splits=splits,
               thresholds=Thresholds(p_min, min_rel_improvement, confirm_max_diff),
-              search_k=search_k, recall_k=recall_k, runs_root=runs_root)
+              search_k=search_k, recall_k=recall_k, runs_root=runs_root, mode=mode,
+              shuffle_memory=shuffle_memory, search_fallback=search_fallback)
     return lab.run()

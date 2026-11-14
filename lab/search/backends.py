@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
 from lab.core.timeutil import from_iso, to_iso
-from lab.search.base import Hit, Searcher, SearchError, clip
+from lab.search.base import Hit, Searcher, SearchError, SearchOutcome, clip
 
 
 class NoSearch(Searcher):
@@ -17,6 +17,9 @@ class NoSearch(Searcher):
     def __init__(self, **kwargs):
         kwargs["cache_dir"] = None
         super().__init__(**kwargs)
+
+    def search_detailed(self, query, *, k=5, before=None):
+        return SearchOutcome([], None)
 
     def search(self, query, *, k=5, before=None):
         return []
@@ -39,15 +42,30 @@ def _last_day_before(before: datetime) -> str:
 
 
 class OpenAlexSearch(Searcher):
-    """https://api.openalex.org/works?search=...&per-page=... (keyless)."""
+    """https://api.openalex.org/works?search=...&per-page=...
+
+    Works without a key, but anonymous search is rate-limited (HTTP 429). With
+    OPENALEX_API_KEY set, the key is sent as `Authorization: Bearer <key>` (one of
+    the two ways OpenAlex documents; a header keeps it out of URLs and logs).
+    OPENALEX_MAILTO, if set, is sent as the `mailto` parameter; current OpenAlex
+    docs no longer mention it, so it is harmless at worst."""
 
     name = "openalex"
     URL = "https://api.openalex.org/works"
+
+    def __init__(self, *, api_key: str | None = None, mailto: str | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self.api_key = api_key or os.environ.get("OPENALEX_API_KEY") or None
+        self.mailto = mailto or os.environ.get("OPENALEX_MAILTO") or None
+        if self.api_key:
+            self.client.headers["Authorization"] = f"Bearer {self.api_key}"
 
     def _fetch(self, query, k, before):
         params = {"search": query, "per-page": str(max(1, min(50, k)))}
         if before is not None:
             params["filter"] = f"to_publication_date:{_last_day_before(before)}"
+        if self.mailto:
+            params["mailto"] = self.mailto
         data = self._get(self.URL, params=params).json()
         hits = []
         for w in data.get("results") or []:
@@ -120,12 +138,7 @@ class ExaSearch(Searcher):
                 "contents": {"highlights": True, "text": {"maxCharacters": self.max_characters}}}
         if before is not None:
             body["endPublishedDate"] = to_iso(before - timedelta(seconds=1))
-        try:
-            r = self.client.post(self.URL, json=body, headers={"x-api-key": self.api_key})
-        except Exception as e:  # httpx errors
-            raise SearchError(f"exa search failed: {e}") from e
-        if r.status_code >= 400:
-            raise SearchError(f"exa search failed: HTTP {r.status_code} {r.text[:300]}")
+        r = self._request("POST", self.URL, json=body, headers={"x-api-key": self.api_key})
         hits = []
         for res in r.json().get("results") or []:
             published = res.get("publishedDate")

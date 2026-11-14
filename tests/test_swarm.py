@@ -8,11 +8,16 @@ import numpy as np
 import pytest
 
 from lab.core.stats import Interval, PairedResult
+import httpx
+
 from lab.memory import FullContextMemory, read_jsonl
+from lab.sandbox.lint import lint
+from lab.search import ChainSearch, OpenAlexSearch
 from lab.swarm import Thresholds, decide, failure_digest, run_lab, source_hash
-from lab.swarm.loop import parse_json
-from swarm_fakes import (BETTER, BETTER_SLOPE, BROKEN, RAISE, SEED, WORSE, CannedSearch, FakeEvalPool,
-                         ScriptedLLM, ToyProblem, compare, evaluate, fence)
+from lab.swarm.loop import IDENTICAL_REASON, change_comment, claim_text, normalized, parse_json
+from swarm_fakes import (BETTER, BETTER_COMMENTED, BETTER_SLOPE, BROKEN, RAISE, SEED, SEED_RENAMED, TUNABLE,
+                         WORSE, CannedSearch, FakeEvalPool, ScriptedLLM, ToyProblem, compare, evaluate, fence,
+                         scout_json)
 
 
 def events(run_dir, kind=None):
@@ -95,8 +100,11 @@ def test_findings_have_measured_deltas(story, toy):
         assert f.confirm_delta == pytest.approx(conf.diff.mean)
         assert f.origin == "search" and f.source_url == "https://example.org/ls"
         assert f.known_closed_book is True and f.problem == "toy_line"
-    assert findings[3].accepted and findings[3].select_delta < 0
-    assert not findings[2].accepted and findings[2].select_delta > 0
+        assert f.search_backend == "canned" and f.source_relevance == "domain"
+    assert findings[3].accepted and findings[3].select_delta < 0 and findings[3].became_incumbent is True
+    assert not findings[2].accepted and findings[2].select_delta > 0 and findings[2].became_incumbent is False
+    assert findings[3].text.startswith("[ACCEPTED, became incumbent] toy_line gen 3")
+    assert "Inputs: x. Rule: regress y on x. Leads: all leads equally." in findings[3].claim
     # the notebook backend got the same findings
     assert {f.id for f in read_jsonl(run_dir / "memory.jsonl")} == {f.id for f in findings.values()}
 
@@ -161,14 +169,19 @@ def test_concurrent_generation_with_llm_failure(toy, tmp_path):
     assert len({c["prompt"].split("# Your direction for this proposal")[1][:80]
                 for c in llm.calls if c["role"] == "analyst"}) == 4
     assert (tmp_path / "incumbent.py").read_text() == BETTER
-    sup = events(tmp_path, "superseded_this_generation")
-    assert len(sup) == 1 and sup[0]["hash"] == source_hash(BETTER_SLOPE)
+    not_adopted = events(tmp_path, "not_adopted")
+    assert len(not_adopted) == 1 and not_adopted[0]["hash"] == source_hash(BETTER_SLOPE)
     findings = read_jsonl(tmp_path / "findings.jsonl")
-    note = [f for f in findings if f.supersedes]
-    assert len(note) == 1 and "not adopted" in note[0].text
+    assert len(findings) == 3 and not any(f.supersedes for f in findings)   # one finding per proposal
+    adopted = [f for f in findings if f.became_incumbent]
+    passed = [f for f in findings if f.accepted and not f.became_incumbent]
+    assert len(adopted) == 1 and len(passed) == 1
+    assert passed[0].text.startswith("[passed, not adopted]") and "not adopted" in passed[0].text
+    assert passed[0].select_delta != adopted[0].select_delta           # each keeps its own measurement
     # search off: claims come from the closed-book step
     assert all(f.origin == "closed_book" for f in findings)
     assert s["curve"][1]["accepted"] == 2 and s["curve"][1]["proposals"] == 3
+    assert s["accepted_total"] == 2 and s["became_incumbent_total"] == 1 and s["findings_total"] == 3
 
 
 def test_cost_cap_stops_run_cleanly(toy, tmp_path):
@@ -219,7 +232,7 @@ def test_warm_start_carries_findings_and_playbook(toy, tmp_path):
     engineer = [c for c in llm.calls if c["role"] == "engineer"][0]["prompt"]
     assert "Playbook from earlier runs" in analyst and "Fitting a line in x paid off" in analyst
     assert "Fitting a line in x paid off" in engineer
-    assert "[ACCEPTED] toy_line gen 1" in analyst            # recalled from the earlier run
+    assert "[ACCEPTED, became incumbent] toy_line gen 1" in analyst    # recalled from the earlier run
     assert len(read_jsonl(warm / "findings.jsonl")) == 1      # this run's own findings only
     assert len(read_jsonl(warm / "memory.jsonl")) == 2        # notebook includes the imported one
     assert json.loads((warm / "config.json").read_text())["playbook_given"] is True
@@ -284,3 +297,281 @@ def test_evaluator_contract_fake_matches(toy):
         assert hasattr(res, name)
     assert isinstance(res.losses["select"], np.ndarray)
     assert compare(res, res, toy.splits(), "select").diff.mean == 0.0
+
+
+# ----------------------------------------------------------------- one finding per proposal, duplicates
+
+
+def test_identical_code_in_one_generation_is_marked_duplicate(toy, tmp_path):
+    llm = ScriptedLLM({"engineer": [fence(BETTER), fence(BETTER)]})
+    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search="none",
+                generations=1, proposals=2, run_dir=tmp_path)
+    f0, f1 = sorted(read_jsonl(tmp_path / "findings.jsonl"), key=lambda f: f.duplicate_of is not None)
+    assert f0.accepted and f1.accepted and f0.select_delta == f1.select_delta
+    assert f0.became_incumbent is True and f1.became_incumbent is False
+    assert f1.duplicate_of == f0.id and f0.duplicate_of is None
+    assert "Duplicate of proposal" in f1.text and "same code" in f1.text
+    assert s["accepted_total"] == 2 and s["became_incumbent_total"] == 1 and s["duplicates_total"] == 1
+
+
+def test_identical_predictions_count_as_duplicate(toy, tmp_path):
+    renamed = BETTER.replace('name = "least_squares_line"', 'name = "other_name"').replace(
+        "self.coef = ", "coef = ").replace("[0]\n", "[0]\n        self.coef = coef\n", 1)
+    assert renamed != BETTER and source_hash(renamed) != source_hash(BETTER)
+    llm = ScriptedLLM({"engineer": [fence(BETTER), fence(renamed)]})
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search="none",
+            generations=1, proposals=2, run_dir=tmp_path)
+    fs = read_jsonl(tmp_path / "findings.jsonl")
+    dup = [f for f in fs if f.duplicate_of]
+    assert len(dup) == 1 and "identical predictions" in dup[0].text
+
+
+def test_candidate_identical_to_incumbent_is_rejected_without_evaluation(toy, tmp_path):
+    pool = FakeEvalPool(toy)
+    llm = ScriptedLLM({"engineer": [fence(SEED_RENAMED)]})
+    run_lab(toy, pool, compare, llm_backend=llm, memory="none", search="none", generations=1, proposals=1,
+            run_dir=tmp_path)
+    assert pool.submitted == [SEED]                       # only the incumbent was evaluated
+    d = events(tmp_path, "decision")[0]
+    assert d["accepted"] is False and d["reason"] == IDENTICAL_REASON and d["identical"] is True
+    assert events(tmp_path, "identical_to_incumbent")
+    f = read_jsonl(tmp_path / "findings.jsonl")[0]
+    assert f.select_delta is None and "identical to the incumbent" in f.text
+
+
+def test_normalized_ignores_whitespace_comments_and_name():
+    assert normalized(SEED) == normalized(SEED_RENAMED)
+    assert normalized(SEED) == normalized(SEED.replace("    ", "        ").replace("\n\n", "\n"))
+    assert normalized(SEED) != normalized(BETTER)
+
+
+def test_change_comment_and_claim_text():
+    assert change_comment(BETTER_COMMENTED) == "fit a least-squares line in x"
+    assert change_comment(BETTER) is None and change_comment(None) is None
+    t = claim_text({"technique": "IB", "change": "add pressure term", "inputs": "pressure_hpa",
+                    "rule": "-1 cm per hPa", "leads": "all", "expected_effect": "lower error"})
+    assert t == "IB: add pressure term. Inputs: pressure_hpa. Rule: -1 cm per hPa. Leads: all. Expected: lower error."
+    assert claim_text({"technique": "x", "rule": "r"}) == "x: r."
+
+
+def test_engineer_records_change_comment(toy, tmp_path):
+    llm = ScriptedLLM({"engineer": [fence(BETTER_COMMENTED)]})
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search="none",
+            generations=1, proposals=1, run_dir=tmp_path)
+    assert events(tmp_path, "decision")[0]["change_comment"] == "fit a least-squares line in x"
+    p = [c for c in llm.calls if c["role"] == "engineer"][0]["prompt"]
+    assert "Implement ONLY the change in the claim" in p and "# Change:" in p
+
+
+# ----------------------------------------------------------------- scout relevance and search fallback
+
+
+def test_scout_unrelated_hit_falls_back_to_closed_book(toy, tmp_path):
+    llm = ScriptedLLM({"scout": [scout_json("unrelated")]})
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search=CannedSearch(),
+            generations=1, proposals=1, run_dir=tmp_path)
+    f = read_jsonl(tmp_path / "findings.jsonl")[0]
+    assert f.origin == "closed_book" and f.source_relevance is None and f.search_backend is None
+    assert events(tmp_path, "scout_no_usable_hit")
+    assert "judge" not in llm.roles
+    scout_prompt = [c for c in llm.calls if c["role"] == "scout"][0]["prompt"]
+    assert '"domain"' in scout_prompt and "Prefer a \"domain\" result" in scout_prompt
+
+
+def test_scout_method_hit_is_used_and_recorded(toy, tmp_path):
+    llm = ScriptedLLM({"scout": [scout_json("method")]})
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search=CannedSearch(),
+            generations=1, proposals=1, run_dir=tmp_path)
+    f = read_jsonl(tmp_path / "findings.jsonl")[0]
+    assert f.origin == "search" and f.source_relevance == "method"
+
+
+def test_scout_with_no_chosen_hit_falls_back(toy, tmp_path):
+    llm = ScriptedLLM({"scout": [scout_json("domain", chosen=None)]})
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="none", search=CannedSearch(),
+            generations=1, proposals=1, run_dir=tmp_path)
+    assert read_jsonl(tmp_path / "findings.jsonl")[0].origin == "closed_book"
+
+
+def test_rate_limited_search_falls_back_and_is_recorded(toy, tmp_path):
+    def limited(request):
+        return httpx.Response(429, json={"message": "Anonymous search is temporarily rate-limited. Please retry in 14s"})
+    slept = []
+    openalex = OpenAlexSearch(transport=httpx.MockTransport(limited), cache_dir=None, sleep=slept.append)
+    chain = ChainSearch([openalex, CannedSearch()])
+    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory="none", search=chain,
+                generations=1, proposals=1, run_dir=tmp_path)
+    assert slept == [14.0, 14.0]
+    f = read_jsonl(tmp_path / "findings.jsonl")[0]
+    assert f.origin == "search" and f.search_backend == "canned"
+    ev = events(tmp_path, "search")[0]
+    assert ev["search_backend"] == "canned" and ev["failures"][0]["backend"] == "openalex"
+    assert "429" in events(tmp_path, "search_error")[0]["error"]
+    st = s["search"]
+    assert st["chain"] == ["openalex", "canned"] and st["failed"] == 1 and st["retries"] == 2
+    assert st["by_backend"]["openalex"]["failed"] == 1 and st["by_backend"]["canned"]["searches"] == 1
+    assert json.loads((tmp_path / "config.json").read_text())["search_chain"] == ["openalex", "canned"]
+
+
+# ----------------------------------------------------------------- baselines
+
+
+def test_single_agent_mode(toy, tmp_path):
+    llm = ScriptedLLM({"single_agent": [fence(WORSE), fence(BETTER_COMMENTED)]})
+    s = run_lab(toy, FakeEvalPool(toy), compare, llm_backend=llm, memory="vector", search="openalex",
+                generations=2, proposals=1, run_dir=tmp_path, mode="single_agent")
+    assert set(llm.roles) == {"single_agent"} and len(llm.roles) == 2      # one call per proposal, nothing else
+    p = llm.calls[0]["prompt"]
+    assert "Breakdown by_lead" in p and "class Forecaster" in p and "Sandbox rules" in p
+    assert not events(tmp_path, "recall") and not events(tmp_path, "search")
+    fs = sorted(read_jsonl(tmp_path / "findings.jsonl"), key=lambda f: f.generation)
+    assert [f.origin for f in fs] == ["single_agent", "single_agent"]
+    assert not fs[0].accepted and fs[1].accepted and fs[1].became_incumbent
+    assert fs[1].claim == "fit a least-squares line in x."
+    assert s["mode"] == "single_agent" and s["incumbent_hash"] == source_hash(BETTER_COMMENTED)
+    cfg = json.loads((tmp_path / "config.json").read_text())
+    assert cfg["mode"] == "single_agent" and cfg["search"] == "none"
+    assert (tmp_path / "playbook.md").read_text().startswith("# Playbook for toy_line (written without a model")
+
+
+def _mutation_run(toy, run_dir, seed=3):
+    llm = ScriptedLLM()
+    pool = FakeEvalPool(toy)
+    s = run_lab(toy, pool, compare, llm_backend=llm, memory="none", search="none", generations=3, proposals=3,
+                run_dir=run_dir, mode="random_mutation", start_source=TUNABLE, seed=seed)
+    return s, llm, pool
+
+
+def test_random_mutation_mode(toy, tmp_path):
+    s, llm, pool = _mutation_run(toy, tmp_path / "a")
+    assert llm.calls == [] and s["llm_by_role"] == {}                       # no model at all
+    assert s["status"] == "finished" and s["generations_done"] == 3
+    muts = events(tmp_path / "a", "mutation")
+    assert len(muts) == 9 and {m["kind"] for m in muts} <= {"perturb", "drop_term"}
+    assert all(lint(src) == [] for src in pool.submitted)
+    decisions = events(tmp_path / "a", "decision")
+    assert len(decisions) == 9 and all(d["reason"] for d in decisions)
+    fs = read_jsonl(tmp_path / "a" / "findings.jsonl")
+    assert len(fs) == 9 and all(f.origin == "random_mutation" for f in fs)
+    assert all(f.claim.startswith("Random mutation (") for f in fs)
+    assert sum(bool(f.became_incumbent) for f in fs) == s["became_incumbent_total"]
+    # a mutation never re-submits the incumbent itself
+    inc_hashes = {c["incumbent_hash"] for c in s["curve"]}
+    for d, m in zip(decisions, muts):
+        assert d["hash"] not in inc_hashes or d["accepted"]
+    # same seed, same mutations
+    s2, _, pool2 = _mutation_run(toy, tmp_path / "b")
+    assert pool2.submitted == pool.submitted and s2["curve"][-1]["select"] == s["curve"][-1]["select"]
+
+
+# ----------------------------------------------------------------- shuffled notebook
+
+
+def test_shuffle_memory_permutes_imported_outcomes(toy, tmp_path):
+    cold = tmp_path / "cold"
+    run_lab(toy, FakeEvalPool(toy), compare,
+            llm_backend=ScriptedLLM({"engineer": [fence(WORSE), fence(BETTER), fence(BROKEN)],
+                                     "repair": [fence(BROKEN)]}),
+            memory="vector", search="none", generations=3, proposals=1, run_dir=cold)
+    original = {f.id: f for f in read_jsonl(cold / "findings.jsonl")}
+    warm = tmp_path / "warm"
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory="vector", search="none",
+            generations=1, proposals=1, run_dir=warm, start_memory=cold, shuffle_memory=True, seed=5)
+    cfg = json.loads((warm / "config.json").read_text())
+    assert cfg["shuffle_memory"] is True
+    assert events(warm, "run_start")[0]["shuffled"] is True
+    imported = [f for f in read_jsonl(warm / "memory.jsonl") if f.id in original]
+    assert len(imported) == 3
+    def outcome(f):
+        return (f.accepted, f.became_incumbent, f.select_delta, f.confirm_delta)
+    assert sorted(map(outcome, imported), key=repr) == sorted(map(outcome, original.values()), key=repr)
+    assert any(outcome(f) != outcome(original[f.id]) for f in imported)
+    for f in imported:
+        assert f.claim == original[f.id].claim
+        assert f.text == f.render()                           # text rebuilt from the shuffled fields
+    # the unshuffled warm run imports the outcomes untouched
+    plain = tmp_path / "plain"
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory="vector", search="none",
+            generations=1, proposals=1, run_dir=plain, start_memory=cold)
+    for f in read_jsonl(plain / "memory.jsonl"):
+        if f.id in original:
+            assert outcome(f) == outcome(original[f.id])
+
+
+def test_mutate_unit():
+    import random as _r
+
+    from lab.swarm.mutate import mutate
+    kinds, seen = set(), set()
+    for seed in range(40):
+        m = mutate(TUNABLE, _r.Random(seed))
+        assert m is not None and lint(m.source) == [] and normalized(m.source) != normalized(TUNABLE)
+        kinds.add(m.kind)
+        seen.add(m.source)
+        if m.kind == "drop_term":
+            assert m.description.startswith("drop term at line")
+    assert kinds == {"perturb", "drop_term"} and len(seen) > 20
+    assert mutate(TUNABLE, _r.Random(7)).source == mutate(TUNABLE, _r.Random(7)).source
+    assert mutate(SEED, _r.Random(0)) is None                 # no float constants and no sums: nothing to do
+
+
+# ----------------------------------------------------------------- run index for the dashboard
+
+
+@pytest.fixture
+def lab_root(toy, tmp_path):
+    root = tmp_path / "lab"
+    run_lab(toy, FakeEvalPool(toy), compare, llm_backend=ScriptedLLM(), memory="none", search="none",
+            generations=1, proposals=1, runs_root=root)
+    return root
+
+
+def test_runs_index_lists_and_details(lab_root):
+    from lab.swarm.runs_index import list_runs, run_detail
+    rows = list_runs(lab_root)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["problem"] == "toy_line" and r["status"] == "finished" and r["generations_done"] == 1
+    assert r["mode"] == "swarm" and r["incumbent_select"] < r["incumbent_confirm"] + 10 and r["cost_usd"] == 0.0
+    assert r["started_at"] and r["updated_at"] and r["became_incumbent_total"] == 1
+    d = run_detail(lab_root, "toy_line", r["run_id"])
+    assert d["summary"]["run_id"] == r["run_id"] and d["config"]["problem"] == "toy_line"
+    assert len(d["findings"]) == 1 and d["findings"][0]["became_incumbent"] is True
+    assert d["incumbent_source"] == BETTER
+    assert run_detail(lab_root, "toy_line", "nope") is None
+    assert run_detail(lab_root, "..", r["run_id"]) is None and run_detail(lab_root, "toy_line", "../x") is None
+    assert list_runs(lab_root / "missing") == []
+
+
+def test_runs_index_tolerates_files_mid_write(lab_root):
+    from lab.swarm.runs_index import list_runs, run_detail
+    run_dir = next((lab_root / "toy_line").iterdir())
+    with (run_dir / "findings.jsonl").open("a") as fh:
+        fh.write('{"claim": "half a li')                    # a line still being written
+    (run_dir / "summary.json").write_text('{"run_id": "x", "stat')
+    row = list_runs(lab_root)[0]
+    assert row["status"] == "unreadable" and row["mode"] == "swarm" and row["generations_planned"] == 1
+    d = run_detail(lab_root, "toy_line", run_dir.name)
+    assert d["summary"] is None and d["summary_readable"] is False and len(d["findings"]) == 1
+    (lab_root / "toy_line" / "fresh-run").mkdir()
+    (lab_root / "toy_line" / "fresh-run" / "config.json").write_text('{"mode": "single_agent", "generations": 4}')
+    starting = [r for r in list_runs(lab_root) if r["run_id"] == "fresh-run"][0]
+    assert starting["status"] == "starting" and starting["mode"] == "single_agent"
+
+
+def test_server_lab_endpoints(lab_root, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import lab.server as server
+    monkeypatch.setattr(server, "LAB_RUNS", lab_root)
+    client = TestClient(server.app)
+    r = client.get("/api/lab/runs")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    runs = r.json()["runs"]
+    assert len(runs) == 1 and runs[0]["problem"] == "toy_line"
+    d = client.get(f"/api/lab/runs/toy_line/{runs[0]['run_id']}")
+    assert d.status_code == 200
+    body = d.json()
+    assert body["summary"]["status"] == "finished" and body["incumbent_source"] == BETTER
+    assert len(body["findings"]) == 1
+    assert client.get("/api/lab/runs/toy_line/missing").status_code == 404

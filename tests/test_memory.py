@@ -240,3 +240,44 @@ def test_pastdev_without_key_raises(monkeypatch, tmp_path):
 def test_unknown_backend():
     with pytest.raises(ValueError, match="unknown memory backend"):
         get_memory("nope")
+
+
+# ----------------------------------------------------------------- verdicts and the shuffled control
+
+
+def test_verdict_text_separates_passed_from_adopted():
+    base = dict(select_delta=-0.5, select_low=-0.7, select_high=-0.3, confirm_delta=-0.2)
+    assert F("a", 0, accepted=True, became_incumbent=True, **base).text.startswith("[ACCEPTED, became incumbent]")
+    assert F("a", 0, accepted=True, became_incumbent=False, **base).text.startswith("[passed, not adopted]")
+    assert F("a", 0, accepted=False, became_incumbent=False).text.startswith("[rejected]")
+    f = F("a", 0, source_title="T", source_url="u", source_relevance="method")
+    assert "Source: T u (method)" in f.text
+
+
+def test_new_fields_roundtrip_and_old_rows_load(tmp_path):
+    f = F("a", 0, accepted=True, became_incumbent=False, duplicate_of="x1", search_backend="arxiv",
+          source_relevance="domain")
+    assert Finding.from_dict(json.loads(json.dumps(f.to_dict()))) == f
+    old = {k: v for k, v in NOTEBOOK[0].to_dict().items()
+           if k not in ("became_incumbent", "duplicate_of", "search_backend", "source_relevance")}
+    (tmp_path / "old.jsonl").write_text(json.dumps(old) + "\n")
+    g = read_jsonl(tmp_path / "old.jsonl")[0]
+    assert g.became_incumbent is None and g.search_backend is None and g.claim == NOTEBOOK[0].claim
+
+
+def test_shuffle_outcomes():
+    from lab.memory import OUTCOME_FIELDS, shuffle_outcomes
+    notebook = [F(f"claim {i}", i, accepted=i % 2 == 0, became_incumbent=i == 0, select_delta=float(i),
+                  select_low=i - 0.5, select_high=i + 0.5, confirm_delta=-float(i)) for i in range(6)]
+    out = shuffle_outcomes(notebook, seed=1)
+    assert [f.id for f in out] == [f.id for f in notebook] and [f.claim for f in out] == [f.claim for f in notebook]
+    key = lambda f: tuple(getattr(f, k) for k in OUTCOME_FIELDS)
+    assert sorted(map(key, out)) == sorted(map(key, notebook))       # same outcomes, reassigned
+    assert any(key(a) != key(b) for a, b in zip(out, notebook))
+    for f in out:
+        assert f.text == f.render() and f"Select delta {f.select_delta:+.4g}" in f.text
+    assert [key(f) for f in shuffle_outcomes(notebook, 1)] == [key(f) for f in out]      # seeded
+    assert key(notebook[0]) == (True, True, 0.0, -0.5, 0.5, -0.0)                       # originals untouched
+    two = shuffle_outcomes(notebook[:2], seed=0)
+    assert key(two[0]) == key(notebook[1]) and key(two[1]) == key(notebook[0])           # never the identity
+    assert shuffle_outcomes([], 0) == []

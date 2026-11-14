@@ -11,7 +11,8 @@
 """
 from __future__ import annotations
 
-from lab.memory.base import Finding, LocalMemory, Memory, RecallResult, load_findings, read_jsonl
+from lab.memory.base import (OUTCOME_FIELDS, Finding, LocalMemory, Memory, RecallResult, load_findings,
+                             read_jsonl, shuffle_outcomes)
 from lab.memory.local import FullContextMemory, NoMemory, VectorMemory, tokenize
 from lab.memory.pastdev import PastDevError, PastDevMemory
 
@@ -33,4 +34,4 @@ def get_memory(name: str, path=None, **kwargs) -> Memory:
 
 __all__ = ["BACKENDS", "Finding", "FullContextMemory", "LocalMemory", "Memory", "NoMemory",
            "PastDevError", "PastDevMemory", "RecallResult", "VectorMemory", "get_memory",
-           "load_findings", "read_jsonl", "tokenize"]
+           "OUTCOME_FIELDS", "load_findings", "read_jsonl", "shuffle_outcomes", "tokenize"]

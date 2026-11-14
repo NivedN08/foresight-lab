@@ -144,8 +144,38 @@ class Forecaster:
 '''
 
 
+# a hand-tuned line with constants and several terms, for the random-mutation baseline
+TUNABLE = '''
+class Forecaster:
+    name = "hand_line"
+
+    def fit(self, cases, truths):
+        self.slope = 1.7
+        self.offset = 0.4
+
+    def predict(self, case):
+        x = case.inputs["x"]
+        return {"y": float(self.slope * x + self.offset + 0.05 * x - 0.2)}
+'''
+
+# the seed again, renamed and with a change comment: identical for the lab's purposes
+SEED_RENAMED = '''
+# Change: nothing really
+class Forecaster:
+    name = "train_mean_v2"
+
+    def fit(self, cases, truths):
+        ys = [t["y"] for t in truths]
+        self.m = sum(ys) / len(ys)
+
+    def predict(self, case):
+        return {"y": float(self.m)}
+'''
+
 # normalise like lab.llm.extract_code does, so extract_code(fence(X)) == X
-SEED, BROKEN, WORSE, BETTER, BETTER_SLOPE = (s.strip() + "\n" for s in (SEED, BROKEN, WORSE, BETTER, BETTER_SLOPE))
+SEED, BROKEN, WORSE, BETTER, BETTER_SLOPE, TUNABLE, SEED_RENAMED = (
+    s.strip() + "\n" for s in (SEED, BROKEN, WORSE, BETTER, BETTER_SLOPE, TUNABLE, SEED_RENAMED))
+BETTER_COMMENTED = "# Change: fit a least-squares line in x\n" + BETTER
 
 
 def fence(src: str) -> str:
@@ -219,6 +249,7 @@ RAISE = object()   # put in a script to make that call fail
 
 # substrings that identify each role's prompt (see lab/swarm/prompts.py)
 ROLE_KEYS = {
+    "single_agent": "# Your task (single agent)",
     "playbook": "Write a short playbook",
     "repair": "This candidate failed.",
     "engineer": "# The claim to test",
@@ -232,8 +263,17 @@ ANALYST_JSON = ('{"diagnosis": "The incumbent ignores x.", "hypothesis": "Fit y 
                 '"knowledge_gap": "linear regression least squares", "strategy": "use x"}')
 CLOSED_BOOK_JSON = ('{"techniques": [{"technique": "ordinary least squares", "rule": "fit y = a x + b by '
                     'minimising squared error", "expected_effect": "large drop in error"}]}')
-SCOUT_JSON = ('{"technique": "least squares line", "rule": "regress y on x", "expected_effect": "lower error", '
+SCOUT_JSON = ('{"relevance": [{"n": 1, "relevance": "domain"}], "chosen": 1, "source_relevance": "domain", '
+              '"technique": "least squares line", "change": "predict y as a fitted line in x", "inputs": "x", '
+              '"rule": "regress y on x", "leads": "all leads equally", "expected_effect": "lower error", '
               '"source_title": "Method of least squares", "source_url": "https://example.org/ls"}')
+
+
+def scout_json(relevance: str, chosen=1) -> str:
+    import json
+    d = json.loads(SCOUT_JSON)
+    d.update(source_relevance=relevance, chosen=chosen)
+    return json.dumps(d)
 JUDGE_JSON = '{"known_closed_book": true, "why": "same idea"}'
 
 
@@ -248,6 +288,7 @@ class ScriptedLLM(FakeBackend):
         super().__init__()
         defaults = {"analyst": [ANALYST_JSON], "closed_book": [CLOSED_BOOK_JSON], "scout": [SCOUT_JSON],
                     "judge": [JUDGE_JSON], "engineer": [fence(BETTER)], "repair": [fence(BETTER)],
+                    "single_agent": [fence(BETTER)],
                     "playbook": ["# Playbook\n- Fitting a line in x paid off."]}
         self.queues = {k: list(v) for k, v in {**defaults, **(scripts or {})}.items()}
         self.cost_per_call = cost_per_call

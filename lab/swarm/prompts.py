@@ -99,37 +99,75 @@ Reply with JSON exactly like this:
     return ANALYST_SYSTEM, prompt
 
 
-def closed_book(describe_short: str, gap: str, hypothesis: str) -> tuple[str, str]:
-    prompt = f"""Problem: {describe_short.strip()}
+CLAIM_FIELDS = """  "technique": "short name",
+  "change": "the ONE change to the current forecaster, in one sentence",
+  "inputs": "which fields of case.inputs (or lead_hours / times) it uses, by their exact names",
+  "rule": "the formula or rule in words, specific enough to code without guessing",
+  "leads": "which lead times it should help, and why",
+  "expected_effect": "what should improve and roughly by how much\""""
+
+CONCRETE = """A claim must name ONE concrete, testable change to the current forecaster: which inputs, what
+formula or rule, and why it should lower the error at which leads. Not acceptable: a general
+methodology ("use cross-validation", "try machine learning", "tune hyperparameters", "ensemble
+several models"), a rewrite of the whole model, or anything needing inputs the problem does not
+provide."""
+
+
+def closed_book(describe: str, incumbent: str, gap: str, hypothesis: str) -> tuple[str, str]:
+    prompt = f"""# Problem
+{describe.strip()}
+
+# Current forecaster
+```python
+{incumbent.strip()}
+```
+
 Hypothesis under consideration: {hypothesis.strip()}
 Question: {gap.strip()}
 
-Without searching, list two or three concrete techniques you already know that answer the question.
-For each give the rule or formula in words and the effect you expect on the error.
+Without searching, give two or three changes you already know that answer the question.
+{CONCRETE}
 
 Reply with JSON exactly like this:
-{{"techniques": [{{"technique": "name", "rule": "the formula or rule in words",
-                   "expected_effect": "what should improve and roughly by how much"}}]}}"""
+{{"techniques": [{{
+{CLAIM_FIELDS}
+}}]}}"""
     return CLOSED_BOOK_SYSTEM, prompt
 
 
-def scout(describe_short: str, hypothesis: str, gap: str, hits: list[dict]) -> tuple[str, str]:
+def scout(describe: str, incumbent: str, hypothesis: str, gap: str, hits: list[dict]) -> tuple[str, str]:
     lines = []
     for i, h in enumerate(hits, 1):
         lines.append(f"[{i}] {h.get('title')} ({h.get('year')}) {h.get('url')}\n{h.get('text') or '(no abstract)'}")
-    prompt = f"""Problem: {describe_short.strip()}
+    prompt = f"""# Problem
+{describe.strip()}
+
+# Current forecaster
+```python
+{incumbent.strip()}
+```
+
 Hypothesis under consideration: {hypothesis.strip()}
 Search query: {gap.strip()}
 
 # Search results
 {chr(10).join(lines)}
 
-Pick the ONE result that gives the most useful technique to test in this model, and extract it.
-Only use what the result says; do not invent results.
+First judge every result: "domain" if it is actually about this problem's subject (the physical or
+real-world process being forecast), "method" if it is a generic statistical or machine-learning
+method that is not about this subject, "unrelated" otherwise.
+Then pick ONE result to extract a claim from. Prefer a "domain" result whenever any domain result
+gives a usable change; use a "method" result only if no domain result does; never use an
+"unrelated" result. If no result gives a usable change, set "chosen" to null.
+{CONCRETE}
+Only use what the chosen result says; do not invent results.
 
 Reply with JSON exactly like this:
-{{"technique": "name", "rule": "the formula or rule in words, specific enough to code",
-  "expected_effect": "what should improve", "source_title": "title of the result",
+{{"relevance": [{{"n": 1, "relevance": "domain"}}],
+  "chosen": 1,
+  "source_relevance": "domain",
+{CLAIM_FIELDS},
+  "source_title": "title of the chosen result",
   "source_url": "its url"}}"""
     return SCOUT_SYSTEM, prompt
 
@@ -166,10 +204,44 @@ Why: {hypothesis.strip()}
 # {SANDBOX_RULES.format(target_key=target_key)}
 
 # Task
-Write the COMPLETE new candidate file: the incumbent with the claim implemented. Change only what
-the claim needs; keep everything else that works. Give the class a new `name` that says what changed.
-Return the whole file (not a diff, no placeholders, no "rest unchanged") in one ```python block."""
+Implement ONLY the change in the claim, on top of the incumbent. Keep every other line identical:
+the same features, the same fitting, the same fallbacks, the same helper names. Change the `name`
+attribute to say what changed. Do not rewrite, restructure or "clean up" anything else; the point
+is to measure this one change.
+The first line of the file must be a one-line comment that says what changed, like:
+# Change: add the 24 h pressure tendency as a term in the residual fit
+If the claim cannot be implemented with the available inputs, implement the closest faithful
+version and say so in that comment.
+Return the COMPLETE file (not a diff, no placeholders, no "rest unchanged") in one ```python block."""
     return ENGINEER_SYSTEM, prompt
+
+
+SINGLE_AGENT_SYSTEM = ("You improve forecasting models. You propose one change and write the complete, "
+                       "working Python file that obeys the sandbox rules exactly. Reply with the full file "
+                       "in one ```python block.")
+
+
+def single_agent(describe: str, incumbent: str, digest: str, target_key: str) -> tuple[str, str]:
+    prompt = f"""# Problem
+{describe.strip()}
+
+# Current model (the incumbent)
+```python
+{incumbent.strip()}
+```
+
+# Where the incumbent loses (select window; aggregates only)
+{digest.strip()}
+
+# {SANDBOX_RULES.format(target_key=target_key)}
+
+# Your task (single agent)
+Choose ONE concrete change that should lower the loss (which inputs, what formula or rule, which
+leads it helps) and implement it on top of the incumbent, keeping everything else the same.
+The first line of the file must be a one-line comment that says what changed, like:
+# Change: add the 24 h pressure tendency as a term in the residual fit
+Return the COMPLETE file in one ```python block."""
+    return SINGLE_AGENT_SYSTEM, prompt
 
 
 def repair(source: str, error: str, target_key: str) -> tuple[str, str]:
@@ -199,5 +271,8 @@ Write a short playbook (at most 25 lines of markdown) for the next run on this p
 1. Kinds of changes that paid off, with the measured size.
 2. Kinds of changes that did not, so they are not retried blindly.
 3. Pitfalls of this codebase and sandbox (errors that wasted attempts).
-Keep only what the findings support. Plain sentences."""
+Keep only what the findings support. A change counts as "did not pay off" only if it was measured
+(it has a select delta); a candidate that failed to run says nothing about its idea, so list it
+under pitfalls instead. "Passed, not adopted" means it worked but another change won that
+generation. Plain sentences."""
     return PLAYBOOK_SYSTEM, prompt

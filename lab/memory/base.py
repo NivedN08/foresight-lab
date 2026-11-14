@@ -37,15 +37,19 @@ class Finding:
     time: datetime = field(default_factory=utcnow)
     source_title: str = ""
     source_url: str = ""
-    origin: str = "closed_book"      # "search" or "closed_book"
+    origin: str = "closed_book"      # "search", "closed_book", "single_agent" or "random_mutation"
     known_closed_book: bool | None = None
-    accepted: bool = False
+    accepted: bool = False           # passed the decision rule against the incumbent it was tested on
     select_delta: float | None = None    # candidate minus incumbent, loss units, negative is better
     select_low: float | None = None
     select_high: float | None = None
     confirm_delta: float | None = None
     supersedes: str | None = None
     text: str = ""                   # compact paragraph an agent can read
+    became_incumbent: bool | None = None  # adopted at the end of its generation (None: not recorded)
+    duplicate_of: str | None = None  # id of a finding in the same generation with the same code or losses
+    search_backend: str | None = None     # backend whose hits the claim came from
+    source_relevance: str | None = None   # "domain", "method" or "unrelated" (search claims only)
 
     def __post_init__(self):
         if isinstance(self.time, str):
@@ -55,9 +59,17 @@ class Finding:
         if not self.text:
             self.text = self.render()
 
+    def verdict(self) -> str:
+        if not self.accepted:
+            return "rejected"
+        if self.became_incumbent is True:
+            return "ACCEPTED, became incumbent"
+        if self.became_incumbent is False:
+            return "passed, not adopted"
+        return "ACCEPTED"
+
     def render(self) -> str:
-        verdict = "ACCEPTED" if self.accepted else "rejected"
-        parts = [f"[{verdict}] {self.problem} gen {self.generation}: {self.claim.strip()}"]
+        parts = [f"[{self.verdict()}] {self.problem} gen {self.generation}: {self.claim.strip()}"]
         if self.select_delta is not None:
             parts.append(f"Select delta {_num(self.select_delta)} "
                          f"(95% interval {_num(self.select_low)} to {_num(self.select_high)}); "
@@ -65,7 +77,8 @@ class Finding:
         else:
             parts.append("Not measured (the candidate did not run).")
         if self.source_title or self.source_url:
-            parts.append(f"Source: {self.source_title} {self.source_url}".strip())
+            parts.append(f"Source: {self.source_title} {self.source_url}".strip()
+                         + (f" ({self.source_relevance})" if self.source_relevance else ""))
         parts.append(f"Origin: {self.origin}"
                      + ("" if self.known_closed_book is None
                         else f"; already known closed-book: {'yes' if self.known_closed_book else 'no'}") + ".")
@@ -109,6 +122,33 @@ def read_jsonl(path: str | os.PathLike) -> list[Finding]:
         line = line.strip()
         if line:
             out.append(Finding.from_dict(json.loads(line)))
+    return out
+
+
+OUTCOME_FIELDS = ("accepted", "became_incumbent", "select_delta", "select_low", "select_high", "confirm_delta")
+
+
+def shuffle_outcomes(findings: list[Finding], seed: int) -> list[Finding]:
+    """The shuffled-notebook control: copies of `findings` whose outcome fields
+    (OUTCOME_FIELDS: the verdict and the measured deltas) are permuted across
+    findings with `seed`, and whose text is rebuilt from the shuffled fields.
+    Claims, sources and ids stay put. With two or more findings the permutation
+    is never the identity (a random permutation that happens to be is rotated
+    by one), so at least some findings carry another finding's outcome."""
+    import random
+    from dataclasses import replace
+
+    n = len(findings)
+    order = list(range(n))
+    random.Random(seed).shuffle(order)
+    if n > 1 and order == list(range(n)):
+        order = order[1:] + order[:1]
+    out = []
+    for i, f in enumerate(findings):
+        src = findings[order[i]]
+        g = replace(f, **{k: getattr(src, k) for k in OUTCOME_FIELDS}, text="")
+        g.text = g.render()
+        out.append(g)
     return out
 
 
