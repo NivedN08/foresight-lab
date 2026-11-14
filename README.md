@@ -2,7 +2,7 @@
 
 An AI research lab that cuts itself off at a date, learns only from before it, locks in forecasts about things that have not happened yet, and is graded by the real world.
 
-Private rehearsal repository for the SF AI Research Hackathon (Nov 14–15, 2026). Plans are in `planning/`; start with `planning/02_project_spec.md`.
+Private rehearsal repository for the SF AI Research Hackathon (Nov 14–15, 2026). **It is not the submission.** The event's rule is that everything is built at the event with no prior commits, so the event repository starts empty and no file from here goes into it. Plans are in `planning/`; start with `planning/00_event_brief.md` and `planning/09_rebuild_guide.md`. What the rehearsal measured is in `docs/experiments.md`.
 
 ## What is here
 
