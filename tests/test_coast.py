@@ -736,3 +736,55 @@ def test_live_promoted_cases_match_problem_history_cases(tmp_path):
         assert shapes(c) == shapes(h)
         ref = build_problem_case(data, c.inputs["station"], c.issue_time, c.inputs["lead_h"], weather="latest")
         assert ref.inputs.keys() == c.inputs.keys()
+
+
+# ------------------------------------------------------------ gaps and interrupted cycles
+def test_gap_is_recorded_once_and_late_grades_counted(tmp_path):
+    from lab.tasks.coast.live import WaterCycle, cycle
+
+    clock = FakeClock(T0)
+    client = FakeClient(clock)
+    wc = WaterCycle(client, fit_days=6, stations=["9414290"], log=lambda *a: None)
+    ledger_dir = tmp_path / "live"
+    s1 = cycle(clock=clock, client=client, ledger_dir=ledger_dir, wc=wc, fetch_alerts=False, log=lambda *a: None)
+    assert s1["gaps"] == []
+    led = SealedLedger(ledger_dir)
+    last = led.sealed()[-1]
+
+    clock.advance(hours=36)                      # nothing ran for 36 hours
+    s2 = cycle(clock=clock, client=client, ledger_dir=ledger_dir, wc=wc, fetch_alerts=False, log=lambda *a: None)
+    [g] = s2["gaps"]
+    assert (g["from"], g["hours"], g["seq_before"], g["seq_after"]) == (last["sealed_at"], 36.0, last["seq"], 20)
+    assert g["due_while_away"] == 20 and g["graded_late"] == 20 and g["unrecoverable"] == 0
+
+    clock.advance(minutes=15)
+    s3 = cycle(clock=clock, client=client, ledger_dir=ledger_dir, wc=wc, fetch_alerts=False, log=lambda *a: None)
+    assert len(s3["gaps"]) == 1 and len(led.gaps_path.read_text().splitlines()) == 1   # graded before it was recorded
+    assert led.verify()[0]
+
+
+def test_cycle_interrupted_before_sealing_starts_again(tmp_path):
+    from lab.tasks.coast.live import WaterCycle, cycle
+
+    clock = FakeClock(T0)
+
+    class Sleepy(FakeClient):        # the machine sleeps for 40 minutes while gauge data loads
+        slept = False
+
+        def get_text(self, url, ttl=None):
+            if "datagetter" in url and not self.slept:
+                Sleepy.slept = True
+                self.clock.advance(minutes=40)
+            return super().get_text(url, ttl)
+
+    client = Sleepy(clock)
+    wc = WaterCycle(client, fit_days=6, stations=["9414290"], log=lambda *a: None)
+    s = cycle(clock=clock, client=client, ledger_dir=tmp_path / "live", wc=wc, fetch_alerts=False,
+              log=lambda *a: None)
+    led = SealedLedger(tmp_path / "live")
+    assert s["ledger"]["records"] == 5 * 4       # one fresh cycle's forecasts, nothing from the stale one
+    assert {r["issued_at"] for r in led.sealed()} == {"2026-11-13T21:36:00Z"}
+    assert all(datetime.fromisoformat(r["sealed_at"].replace("Z", "+00:00"))
+               - datetime.fromisoformat(r["issued_at"].replace("Z", "+00:00")) <= timedelta(minutes=10)
+               for r in led.sealed())
+    assert led.verify()[0]

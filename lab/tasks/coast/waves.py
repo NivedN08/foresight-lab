@@ -356,8 +356,8 @@ class WaveCycle:
         self.fit_info = {}
         self.last_stale = []
 
-    def run(self, now: datetime, ledger, clock):
-        from .live import _existing_keys, _scoreboard, floor6, grade_due
+    def run(self, now: datetime, ledger, clock, _restarts: int = 0):
+        from .live import MAX_CYCLE_LAG, MAX_RESTARTS, _existing_keys, _scoreboard, floor6, grade_due
         self.feats, self.offshore, meta = load_buoys(self.client, now, self.fit_days, log=self.log)
         hour = now.replace(minute=0, second=0, microsecond=0)
         if self.models is None or self.fitted_hour != hour:
@@ -389,6 +389,11 @@ class WaveCycle:
                                          "has_model": c.inputs["has_model"], "has_upstream": c.inputs["has_upstream"],
                                          "upstream_buoy": c.inputs["upstream_buoy"]}})
                     existing.add(key)
+        if out and clock() - now > MAX_CYCLE_LAG:   # the machine slept: start the wave part again
+            if _restarts >= MAX_RESTARTS:
+                raise RuntimeError("wave sealing never came within MAX_CYCLE_LAG of its start")
+            self.log(f"  waves: sealing more than {MAX_CYCLE_LAG} after {to_iso(now)}; starting again")
+            return self.run(clock(), ledger, clock, _restarts + 1)
         if out:
             ledger.seal_many(out, now=clock())
         n_graded, stale = grade_due(ledger, clock(), self.truth, TASK)

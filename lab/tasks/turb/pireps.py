@@ -30,13 +30,17 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from lab.core.timeutil import from_iso, to_iso
 
 from . import net
 
@@ -265,26 +269,44 @@ def fetch_iem(start: datetime, end: datetime, log=print) -> str:
     return r.text
 
 
+IEM_SETTLED = timedelta(hours=24)  # a day fetched this long after it ended is kept for good
+
+
+def _has_reports(text: str) -> bool:
+    return len(text.strip().splitlines()) > 1  # more than the header
+
+
+def iem_day_text(d: datetime, now: datetime, log=print) -> str:
+    """The IEM archive CSV for the UTC day starting at `d`, up to `now`. A day
+    is cached under cache/turb/iem/ for good only if it was fetched at least
+    IEM_SETTLED after it ended and holds reports; otherwise it is fetched again
+    the next time it is needed. A cache file counts only if its modification
+    time (when it was written) meets the same rule."""
+    cache = net.CACHE / "iem"
+    cache.mkdir(parents=True, exist_ok=True)
+    d_end = d + timedelta(days=1)
+    path = cache / f"{d:%Y-%m-%d}.csv"
+    if path.exists():
+        written = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        text = path.read_text()
+        if written >= d_end + IEM_SETTLED and _has_reports(text):
+            return text
+    log(f"  IEM reports {d:%Y-%m-%d}")
+    text = fetch_iem(d, min(d_end, now), log=log)
+    if now >= d_end + IEM_SETTLED and _has_reports(text):  # archive settled; keep it
+        path.write_text(text)
+    return text
+
+
 def load_iem_days(days: int, now: datetime, log=print) -> pd.DataFrame:
     """Turbulence reports for the last `days` UTC days up to `now`. Whole past
     days are cached under cache/turb/iem/; the current day is always refetched."""
-    cache = net.CACHE / "iem"
-    cache.mkdir(parents=True, exist_ok=True)
     day0 = (now - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
     frames = []
     d = day0
     while d < now:
-        d_end = d + timedelta(days=1)
-        path = cache / f"{d:%Y-%m-%d}.csv"
-        if path.exists():
-            text = path.read_text()
-        else:
-            log(f"  IEM reports {d:%Y-%m-%d}")
-            text = fetch_iem(d, min(d_end, now), log=log)
-            if d_end <= now - timedelta(hours=3):  # archive settled; keep it
-                path.write_text(text)
-        frames.append(parse_iem_csv(text))
-        d = d_end
+        frames.append(parse_iem_csv(iem_day_text(d, now, log=log)))
+        d = d + timedelta(days=1)
     df = pd.concat(frames, ignore_index=True) if frames else _rows_to_frame([])
     return dedupe(df[df["time"] <= pd.Timestamp(now)])
 
@@ -388,8 +410,8 @@ def append_to_store(reports: pd.DataFrame, path: Path = LIVE_STORE) -> None:
     out.to_csv(path, mode="a", header=not path.exists(), index=False)
 
 
-def read_store(path: Path = LIVE_STORE, legacy: Path | None = LEGACY_STORE) -> pd.DataFrame:
-    """Labelled layer rows from the store, re-parsed from the raw text and de-duplicated."""
+def _store_rows(path: Path, legacy: Path | None) -> pd.DataFrame:
+    """Report rows of the store as written (one per report, duplicates kept)."""
     frames = []
     if legacy is not None and Path(legacy).exists():
         old = pd.read_csv(legacy, keep_default_na=False, na_values=[""])
@@ -398,8 +420,135 @@ def read_store(path: Path = LIVE_STORE, legacy: Path | None = LEGACY_STORE) -> p
     if Path(path).exists():
         frames.append(pd.read_csv(path, keep_default_na=False, na_values=[""]))
     if not frames:
-        return _rows_to_frame([])
+        return _frame([], REPORT_COLUMNS)
     df = pd.concat(frames, ignore_index=True)
     df["raw"] = df["raw"].astype(str)
     df["time"] = pd.to_datetime(df["time"], utc=True, format="ISO8601")
-    return dedupe(expand_layers(df[REPORT_COLUMNS]))
+    return df[REPORT_COLUMNS]
+
+
+def read_store(path: Path = LIVE_STORE, legacy: Path | None = LEGACY_STORE) -> pd.DataFrame:
+    """Labelled layer rows from the store, re-parsed from the raw text and de-duplicated."""
+    df = _store_rows(path, legacy)
+    if df.empty:
+        return _rows_to_frame([])
+    return dedupe(expand_layers(df))
+
+
+def _row_keys(df: pd.DataFrame) -> list[tuple]:
+    return list(zip(df["time"].dt.floor("min"), df["raw"].astype(str).map(report_key)))
+
+
+def append_new_to_store(reports: pd.DataFrame, path: Path = LIVE_STORE, legacy: Path | None = LEGACY_STORE) -> int:
+    """Append only the reports the store does not hold yet (same minute and
+    report body); returns how many were appended."""
+    if reports.empty:
+        return 0
+    seen = set(_row_keys(_store_rows(path, legacy)))
+    keep = []
+    for k in _row_keys(reports):
+        keep.append(k not in seen)
+        seen.add(k)
+    new = reports[keep]
+    if len(new):
+        append_to_store(new, path)
+    return int(len(new))
+
+
+# ---------------------------------------------------------------- coverage
+# Next to the store, the time spans each source has delivered in full:
+# {"source", "from", "to", "fetched_at"}. New spans are appended; once a cycle
+# the file is rewritten with overlapping or adjacent spans of a source merged
+# and spans older than any record can still need dropped.
+# Records are graded only where the spans cover their whole truth window.
+COVERAGE_SETTLE = timedelta(minutes=60)  # late reports: an hour counts only if fetched this long after it ended
+@dataclass
+class Fetched:
+    """Report rows from one source and the time span the request covered."""
+    source: str
+    start: datetime
+    end: datetime
+    reports: pd.DataFrame  # REPORT_COLUMNS
+
+
+def coverage_path(store: Path) -> Path:
+    store = Path(store)
+    return store.with_name(store.name + ".coverage.jsonl")
+
+
+def covered_spans(start: datetime, end: datetime, times, fetched_at: datetime,
+                  settle: timedelta = COVERAGE_SETTLE) -> list[tuple[datetime, datetime]]:
+    """The parts of [start, end] a fetch made at `fetched_at` covers. A clock hour
+    (or the part of it inside the span) counts only if the fetch was made at
+    least `settle` after the hour ended, so late reports had time to arrive,
+    and if the fetch returned at least one report in it: across the whole
+    country an empty hour means the source had nothing yet, not calm air."""
+    have = {t.to_pydatetime() for t in pd.to_datetime(pd.Series(times), utc=True).dt.floor("h")}
+    spans: list[list[datetime]] = []
+    t = start
+    while t < end:
+        h0 = t.replace(minute=0, second=0, microsecond=0)
+        h1 = min(h0 + timedelta(hours=1), end)
+        if h0 in have and fetched_at >= h0 + timedelta(hours=1) + settle:
+            if spans and spans[-1][1] == t:
+                spans[-1][1] = h1
+            else:
+                spans.append([t, h1])
+        t = h1
+    return [(a, b) for a, b in spans]
+
+
+def record_coverage(store: Path, source: str, spans, fetched_at: datetime) -> None:
+    if not spans:
+        return
+    with open(coverage_path(store), "a") as fh:
+        for a, b in spans:
+            fh.write(json.dumps({"source": source, "from": to_iso(a), "to": to_iso(b),
+                                 "fetched_at": to_iso(fetched_at)}) + "\n")
+
+
+def _merge(lines: list[dict]) -> list[dict]:
+    """Per source, overlapping or adjacent spans merged (latest fetched_at kept), sorted."""
+    out: list[dict] = []
+    for c in sorted(lines, key=lambda c: (c["source"], from_iso(c["from"]))):
+        last = out[-1] if out else None
+        if last and last["source"] == c["source"] and from_iso(c["from"]) <= from_iso(last["to"]):
+            if from_iso(c["to"]) > from_iso(last["to"]):
+                last["to"] = c["to"]
+            last["fetched_at"] = max(last["fetched_at"], c["fetched_at"])
+        else:
+            out.append(dict(c))
+    return out
+
+
+def read_coverage(store: Path) -> list[dict]:
+    """The covered spans, merged per source."""
+    p = coverage_path(store)
+    if not p.exists():
+        return []
+    return _merge([json.loads(line) for line in p.read_text().splitlines() if line.strip()])
+
+
+def compact_coverage(store: Path, keep_after: datetime | None = None) -> int:
+    """Rewrite the coverage file with merged spans, dropping spans that ended
+    before `keep_after` (atomically); returns the line count."""
+    p = coverage_path(store)
+    if not p.exists():
+        return 0
+    merged = [c for c in read_coverage(store) if keep_after is None or from_iso(c["to"]) >= keep_after]
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text("".join(json.dumps(c) + "\n" for c in merged))
+    tmp.replace(p)
+    return len(merged)
+
+
+def window_coverage(coverage: list[dict], start: datetime, end: datetime) -> tuple[bool, list[str]]:
+    """(whether the spans together cover [start, end], the sources with spans in it)."""
+    spans = sorted((from_iso(c["from"]), from_iso(c["to"]), c["source"]) for c in coverage)
+    spans = [s for s in spans if s[1] >= start and s[0] <= end]
+    t = start
+    for a, b, _ in spans:
+        if a > t:
+            break
+        t = max(t, b)
+    return t >= end, sorted({s for a, b, s in spans if b > start and a < end})

@@ -7,6 +7,11 @@ Each cycle: refresh data; fit models on history strictly before now; build one
 live case per station and lead (issue time = now); seal every model's
 prediction; grade every due record whose truth has arrived; verify the chain;
 write runs/coast/live/state.json for the dashboard.
+
+After sealing, a stretch of more than two hours between seals is recorded as
+a gap (SealedLedger.check_gap; water seals at most once per target hour, so up to an hour
+between seals is normal). A cycle that reaches sealing more than 10 minutes
+after its own start time is abandoned unsealed and started again.
 """
 from __future__ import annotations
 
@@ -46,6 +51,26 @@ LIVE_WEATHER = "latest"
 LAB_PREFIX = "Lab:"
 # The paired scoreboard gives a 95% interval only from this many station-days on.
 MIN_PAIRED_BLOCKS = 5
+GAP_TASK = "coast"                       # gaps cover the whole ledger (water and waves)
+SEAL_EVERY = timedelta(hours=1)          # water seals once per target hour
+GAP_UNRECOVERABLE_AFTER = timedelta(days=7)  # a gap's record still ungraded this long after its target
+MAX_CYCLE_LAG = timedelta(minutes=10)    # sealing later than this after the cycle's start abandons the cycle
+MAX_RESTARTS = 2
+
+
+class StaleCycle(Exception):
+    """The cycle reached sealing too long after its start time (the machine slept)."""
+
+
+def check_lag(now: datetime, clock) -> None:
+    t = clock()
+    if t - now > MAX_CYCLE_LAG:
+        raise StaleCycle(f"sealing at {to_iso(t)}, more than {MAX_CYCLE_LAG} after the cycle started at "
+                         f"{to_iso(now)}; abandoned without sealing")
+
+
+def _gap_lost(rec: dict, now: datetime) -> bool:
+    return now - from_iso(rec["target_time"]) > GAP_UNRECOVERABLE_AFTER
 
 
 def floor6(t: datetime) -> datetime:
@@ -346,15 +371,29 @@ def build_state(now: datetime, ledger: SealedLedger, wc: WaterCycle, stale: list
         "waves": waves,
         "backtest_waves": backtest_waves,
         "alerts": alerts,
+        "gaps": ledger.gaps(),
     }
     return state
 
 
 # ---------------------------------------------------------------- cycle
 def cycle(clock=utcnow, client: Client | None = None, ledger_dir: Path = LIVE_DIR,
-          wc: WaterCycle | None = None, wave_cycle=None, fetch_alerts: bool = True, log=print) -> dict:
+          wc: WaterCycle | None = None, wave_cycle=None, fetch_alerts: bool = True, log=print,
+          interval: int = 900) -> dict:
     """One cycle. `clock` gives the current UTC time; it is read again at the
-    moment of sealing so the recorded sealing time is never earlier than the truth."""
+    moment of sealing so the recorded sealing time is never earlier than the truth.
+    If sealing comes more than MAX_CYCLE_LAG after the start, the cycle is started
+    again with the current time (at most MAX_RESTARTS times)."""
+    for _ in range(MAX_RESTARTS + 1):
+        try:
+            return _cycle(clock, client, ledger_dir, wc, wave_cycle, fetch_alerts, log, interval)
+        except StaleCycle as e:
+            log(f"  {e}; starting a fresh cycle")
+    raise RuntimeError(f"cycle abandoned {MAX_RESTARTS + 1} times: sealing never came within "
+                       f"{MAX_CYCLE_LAG} of the cycle's start")
+
+
+def _cycle(clock, client, ledger_dir, wc, wave_cycle, fetch_alerts, log, interval) -> dict:
     now = clock()
     client = client or Client()
     ledger = SealedLedger(ledger_dir)
@@ -367,6 +406,7 @@ def cycle(clock=utcnow, client: Client | None = None, ledger_dir: Path = LIVE_DI
     t_promoted = time.time()
     forecasts += wc.promoted_forecasts(now, existing)
     t_promoted = time.time() - t_promoted
+    check_lag(now, clock)
     if forecasts:
         ledger.seal_many(forecasts, now=clock())
     n_graded, stale = grade_due(ledger, clock(), wc.truth, TASK)
@@ -378,6 +418,10 @@ def cycle(clock=utcnow, client: Client | None = None, ledger_dir: Path = LIVE_DI
         except Exception as e:
             log(f"  waves failed: {e}")
             traceback.print_exc()
+    for gap in ledger.check_gap(GAP_TASK, 2 * max(timedelta(seconds=interval), SEAL_EVERY), now=clock()):
+        log(f"  gap: nothing sealed from {gap['from']} to {gap['to']} ({gap['hours']} h); "
+            f"{gap['due_while_away']} records came due meanwhile")
+    ledger.update_gaps(clock(), unrecoverable=_gap_lost)
     alerts = S.fetch_alerts(client, "CA,OR,WA") if fetch_alerts else []
     info = {"now": to_iso(now), "sealed_this_cycle": len(forecasts), "graded_this_cycle": n_graded,
             "wave_sealed_this_cycle": n_wave_sealed, "wave_graded_this_cycle": n_wave_graded,
@@ -439,7 +483,7 @@ def main():
     while True:
         start = time.time()
         try:
-            cycle(client=client, wc=wc, wave_cycle=wave, ledger_dir=args.ledger_dir)
+            cycle(client=client, wc=wc, wave_cycle=wave, ledger_dir=args.ledger_dir, interval=args.interval)
         except Exception:
             traceback.print_exc()
         if args.mode == "once":

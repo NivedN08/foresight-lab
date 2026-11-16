@@ -13,7 +13,8 @@ seals one risk grid per valid hour (the next six whole hours) in the
 hash-chained ledger `runs/turb/live` (`lab/core/ledger.py`). When a valid hour
 has passed by at least 75 minutes (so late reports count), the record is
 graded with the pilot-report layers at flight level 200 and above within 30
-minutes of the valid time.
+minutes of the valid time, but only if the report store covers that whole
+window (see "Coverage, gaps and interrupted cycles").
 
 Read these before trusting any number:
 
@@ -102,6 +103,56 @@ above). Cases use only values whose recorded time is at or before their issue
 time; `tests/test_turb_cases.py` checks that this rule holds in the code, which
 matters for live forecasts but cannot make hindsight fields into forecasts.
 
+## Coverage, gaps and interrupted cycles
+
+**Coverage.** Each fetch adds its new reports to the live store and then
+appends the time spans it covered to
+`cache/turb/pireps_live_reports.csv.coverage.jsonl`: `{source, from, to,
+fetched_at}`, source `awc` (last 2 hours) or `iem` (last 6 hours, or one
+archive day). A clock hour counts as covered by a fetch only if the fetch was
+made at least 60 minutes after the hour ended (so late reports had time to
+arrive) and returned at least one report in it (across the whole country an
+empty hour means the source had nothing yet, not calm air). In practice a
+record is graded about two hours after its valid hour, and the 2-hour AWC
+fetch rarely covers a whole window on its own. Once a cycle the file is
+rewritten with each source's overlapping or adjacent spans merged and spans
+older than 14 days dropped, so it stays small. A record is graded only when
+the spans together cover its whole window (valid time +-30 minutes). Otherwise it stays
+ungraded and is tried again next cycle. If a due record's window is not
+covered, the cycle backfills from the IEM archive every UTC day from that
+window to now (at most 14 days back; days IEM already covers are skipped).
+A record still uncovered 7 days after its window ends is never graded: it is
+appended to `runs/turb/live/unrecoverable.jsonl` (`{seq, sealed_hash,
+target_time, recorded_at}`), leaves the due list for good (also after a
+restart) and is counted as unrecoverable. Archive days are cached under
+`cache/turb/iem/` for good only if fetched at least 24 hours after the day
+ended and not empty; otherwise they are fetched again when needed. This rule
+exists because, after the freeze of 2026-11-14/16 (about 35.7 hours for
+turbulence, 35.5 for coast), the first cycle graded 329 overdue records, 217 with
+no reports at all, against a store that only held the last few hours.
+
+**Gap record.** After a cycle seals, a stretch of more than two intervals
+(one hour at the default 30 minutes) since the previous seal is recorded as
+one line in
+`runs/turb/live/gaps.jsonl`: `task`, `from` (last seal before the gap), `to` (the first seal after it), `hours`, `cause` (always "no forecast sealed in this period": cycles may have run and failed, and the job cannot know why), `seq_before` and `head_before` (chain position before the gap), `seq_after` (first seq sealed after it), `due_while_away` (records whose target fell inside the gap), `graded_late` (how many of those are graded now), `unrecoverable` (how many never will be), `recorded_at`, and `updated_at` once a follow-up line exists. A gap is written once (same
+`task` and `from`); later counts are appended as follow-up lines
+`{follow_up_of: {task, from}, graded_late, unrecoverable, recorded_at}` and
+no line is edited. Gap lines are not in `sealed.jsonl` and do not affect
+`verify`. The check scans the whole chain, so the first cycle after this
+change also records the gaps already in the history (on the current state:
+2.1, 2.02 and 35.74 hours for turbulence; 2.13 and 35.5 hours for coast).
+
+**Interrupted cycle.** Downloaded fields are stamped with the time the
+download finished, and the cycle's issue time moves to that time, so a
+forecast never uses fields stamped after its issue time. If sealing would
+happen more than 10 minutes after the cycle's (possibly moved) start time,
+nothing is sealed and the cycle starts again with the current time (at most
+twice).
+
+**Known limit (older than these rules).** The G-AIRMET polygons are fetched
+during sealing, a little after `issued_at`, so the GAirmet baseline can see
+an official product issued in those seconds.
+
 ## Models
 
 | Model | Risk (higher = more likely moderate or greater) | Units in grids |
@@ -139,7 +190,11 @@ One sealed record per model and valid hour per cycle (about 42 per cycle).
   `lead_exact_hours` instead; their real lead is always `target_time -
   sealed_at`, which is what the scoreboard uses for every record.
 * grade `truth`: `window_minutes` (30), `n`, and `reports`: list of
-  `{time, lat, lon, fl, code, layer}` for upper-level report layers in the window
+  `{time, lat, lon, fl, code, layer}` for upper-level report layers in the window.
+  Grades written from 2026-11-16 on also carry `sources` (the sources whose
+  coverage spans fall in the window: `["awc"]`, `["iem"]` or both) and
+  `coverage` (`"complete"`, the only value a grade can have). Older grades
+  lack both and were not checked for coverage
 
 ## state.json fields
 
@@ -151,6 +206,7 @@ One sealed record per model and valid hour per cycle (about 42 per cycle).
 | `ledger.graded` | records with a grade |
 | `ledger.head` | hash of the last sealed record |
 | `ledger.verify` | `{ok, checked, message}` from `SealedLedger.verify()` |
+| `gaps` | stretches with nothing sealed, from `runs/turb/live/gaps.jsonl`, oldest first, each with the counts of its latest follow-up line (empty if none) |
 | `grid.lats`, `grid.lons` | grid axes (degrees; 25.0..50.0 and -125.0..-67.5 every 2.5) |
 | `grid.levels_hpa`, `grid.flight_levels` | the six levels and the flight level each stands for (standard atmosphere); `grid.levels` is the same as a list of `{hpa, flight_level}` |
 | `grid.resolution_deg` | 2.5 |

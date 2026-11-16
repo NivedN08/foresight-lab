@@ -11,12 +11,19 @@ Each cycle:
      (level x lat x lon) in SealedLedger("runs/turb/live");
   4. fetch the latest pilot reports (Aviation Weather Center + Iowa
      Environmental Mesonet), keep each raw response under cache/turb/raw/ and
-     append the reports to cache/turb/pireps_live_reports.csv (append-only;
-     duplicates are removed when it is read);
+     append the new reports to cache/turb/pireps_live_reports.csv (append-only);
+     record which time spans each source delivered (the coverage file next to
+     it); if a due record's window is not covered, backfill its days from the
+     IEM archive (at most 14 days back);
   5. grade every sealed record whose valid hour passed at least 75 minutes
-     ago (so late reports count), with the upper-level report layers within
-     +-30 minutes of the valid time;
+     ago (so late reports count) and whose whole window is covered, with the
+     upper-level report layers within +-30 minutes of the valid time; an
+     uncovered record waits, and after 7 days uncovered it is never graded;
   6. verify the ledger and write runs/turb/live/state.json for the dashboard.
+
+After sealing, a stretch of more than two intervals since the previous seal is
+recorded as a gap (SealedLedger.check_gap). A cycle that reaches sealing more than 10 minutes
+after its own start time is abandoned unsealed and started again.
 """
 from __future__ import annotations
 
@@ -54,6 +61,15 @@ FIELD_REFRESH = timedelta(hours=3)
 STATE_MODELS = ("SeedBlend", "Ellrod1")
 TOP_SHARE = 0.20
 LEDGER_DIR = net.RUNS / "live"
+INTERVAL_S = 1800
+BACKFILL_MAX = timedelta(days=14)   # how far back missing report days are fetched from the IEM archive
+GIVE_UP_AFTER = timedelta(days=7)   # a window still uncovered this long after it ended is never graded
+MAX_CYCLE_LAG = timedelta(minutes=10)  # sealing later than this after the cycle's start abandons the cycle
+MAX_RESTARTS = 2
+
+
+class StaleCycle(Exception):
+    """The cycle reached sealing too long after its start time (the machine slept)."""
 
 
 def _hour(t: datetime) -> datetime:
@@ -69,9 +85,10 @@ def _round_grid(a: np.ndarray, nd: int = 3) -> list:
 class Clients:
     """Everything that touches the network, so tests can swap in fakes."""
     fetch_fields: Callable[[datetime], F.FieldSet]          # forecast download at `now`
-    fetch_recent_reports: Callable[[datetime], pd.DataFrame]
+    fetch_recent_reports: Callable[[datetime], list[P.Fetched]]   # each source's rows and covered span
     fetch_history_reports: Callable[[datetime], pd.DataFrame]
     fetch_gairmets: Callable[[datetime], list] | None = None
+    fetch_archive_reports: Callable[[datetime, datetime], pd.DataFrame] | None = None  # (UTC day, now) -> rows
 
 
 def real_clients(log=print) -> Clients:
@@ -79,29 +96,33 @@ def real_clients(log=print) -> Clients:
         return F.fetch_open_meteo(now, past_hours=6, forecast_hours=12, batch=44, log=log)
 
     def recent(now):
-        frames = []
+        out = []
         try:
-            frames.append(P.fetch_awc_reports(now, age_hours=2, log=log))
+            out.append(P.Fetched("awc", now - timedelta(hours=2), now, P.fetch_awc_reports(now, age_hours=2, log=log)))
         except net.FetchError as e:
             log(f"  AWC reports failed: {e}")
         try:
-            frames.append(P.fetch_iem_reports(now, hours=6, log=log))
+            out.append(P.Fetched("iem", now - timedelta(hours=6), now, P.fetch_iem_reports(now, hours=6, log=log)))
         except net.FetchError as e:
             log(f"  IEM recent reports failed: {e}")
-        return pd.concat(frames, ignore_index=True) if frames else P._frame([], P.REPORT_COLUMNS)
+        return out
 
     def history(now):
         return P.load_iem_days(31, now, log=log)
 
-    return Clients(fields_now, recent, history, lambda now: GA.fetch_gairmets(log=log, now=now))
+    def archive(day, now):
+        return P.iem_reports(P.iem_day_text(day, now, log=log))
+
+    return Clients(fields_now, recent, history, lambda now: GA.fetch_gairmets(log=log, now=now), archive)
 
 
 class LiveJob:
     def __init__(self, clients: Clients, ledger_dir: Path = LEDGER_DIR,
                  field_store: F.FieldStore | None = None, report_store: Path = P.LIVE_STORE,
                  backtest_path: Path = net.RUNS / "backtest.json", log=print,
-                 clock: Callable[[], datetime] = utcnow):
+                 clock: Callable[[], datetime] = utcnow, interval: int = INTERVAL_S):
         self.clients = clients
+        self.gap_after = timedelta(seconds=2 * interval)
         self.clock = clock
         self.ledger = SealedLedger(ledger_dir)
         self.store = field_store or F.FieldStore()
@@ -109,23 +130,30 @@ class LiveJob:
         self.legacy_store = P.LEGACY_STORE if Path(report_store) == P.LIVE_STORE else None
         self.backtest_path = Path(backtest_path)
         self.state_path = Path(ledger_dir) / "state.json"
+        # records given up for good (uncovered too long); append-only, so a restart does not retry them
+        self.lost_path = Path(ledger_dir) / "unrecoverable.jsonl"
         self.log = log
 
     # ------------------------------------------------------------ fields
-    def refresh_fields(self, now: datetime) -> None:
+    def refresh_fields(self, now: datetime) -> datetime | None:
+        """Download fields if due. They are stamped with the time the download
+        finished, which is returned (None if nothing was downloaded)."""
         last = self.store.latest_fetch("live")
         merged = self.store.known_at(now)
         need = int((_hour(now) + timedelta(hours=max(LEADS))).timestamp())
         covered = merged is not None and need in set(merged.times.tolist())
         if last is not None and now - last < FIELD_REFRESH and covered:
             self.log(f"  fields: using download from {to_iso(last)}")
-            return
+            return None
         try:
             fs = self.clients.fetch_fields(now)
-            self.store.add(F.drop_nan_hours(fs), "live", now)
-            self.log(f"  fields: downloaded {len(fs.times)} hours")
+            fetched = max(now, self.clock().replace(microsecond=0))
+            self.store.add(F.drop_nan_hours(F.stamp_download(fs, fetched)), "live", fetched)
+            self.log(f"  fields: downloaded {len(fs.times)} hours (finished {to_iso(fetched)})")
+            return fetched
         except Exception as e:  # keep going with older fields
             self.log(f"  fields: download failed ({e}); using what is cached")
+            return None
 
     # --------------------------------------------------------------- fit
     def fit_models(self, now: datetime):
@@ -185,6 +213,9 @@ class LiveJob:
                                          "grid": spec, "polygons": snap,
                                          "snapshot_valid_time": snap[0]["valid_time"]}, meta))
         sealed_at = self.clock()
+        if sealed_at - now > MAX_CYCLE_LAG:
+            raise StaleCycle(f"sealing at {to_iso(sealed_at)}, more than {MAX_CYCLE_LAG} after the cycle "
+                             f"started at {to_iso(now)}; abandoned without sealing")
         for r in out:  # the real lead: valid time minus the time of sealing
             r["meta"]["lead_minutes"] = round((r["target_time"] - sealed_at).total_seconds() / 60, 1)
         late = [r for r in out if r["target_time"] <= sealed_at + timedelta(minutes=1)]
@@ -202,49 +233,139 @@ class LiveJob:
                 "issued_at": now, "target_time": valid, "prediction": prediction, "meta": dict(meta)}
 
     # ------------------------------------------------------------- grade
+    def _keep(self, f: P.Fetched, now: datetime) -> tuple[int, int]:
+        """Add one fetch to the store, then record the spans it covered."""
+        rows = f.reports[f.reports["time"] <= pd.Timestamp(now)]
+        added = P.append_new_to_store(rows, self.report_store, legacy=self.legacy_store)
+        P.record_coverage(self.report_store, f.source,
+                          P.covered_spans(f.start, min(f.end, now), rows["time"], fetched_at=now), now)
+        return len(rows), added
+
+    def lost(self) -> set[int]:
+        if not self.lost_path.exists():
+            return set()
+        return {json.loads(line)["seq"] for line in self.lost_path.read_text().splitlines() if line.strip()}
+
+    def _due(self, now: datetime) -> list[dict]:
+        lost = self.lost()
+        return [r for r in self.ledger.ungraded_due(now)
+                if r["task"] == TASK and from_iso(r["target_time"]) + GRADE_DELAY <= now and r["seq"] not in lost]
+
+    @staticmethod
+    def _window(r: dict) -> tuple[datetime, datetime]:
+        v = from_iso(r["target_time"])
+        return v - TRUTH_WINDOW, v + TRUTH_WINDOW
+
+    @staticmethod
+    def given_up(r: dict, now: datetime) -> bool:
+        return now > from_iso(r["target_time"]) + TRUTH_WINDOW + GIVE_UP_AFTER
+
+    def backfill_reports(self, now: datetime) -> list[P.Fetched]:
+        """IEM archive days, from the oldest due record whose window is not
+        covered (at most BACKFILL_MAX back) to now, skipping days IEM already covers."""
+        if self.clients.fetch_archive_reports is None:
+            return []
+        cov = P.read_coverage(self.report_store)
+        starts = [self._window(r)[0] for r in self._due(now)
+                  if not self.given_up(r, now) and not P.window_coverage(cov, *self._window(r))[0]]
+        if not starts:
+            return []
+        iem = [c for c in cov if c["source"] == "iem"]
+        day = max(min(starts), now - BACKFILL_MAX).replace(hour=0, minute=0, second=0, microsecond=0)
+        out = []
+        while day < now:
+            end = min(day + timedelta(days=1), now)
+            if not P.window_coverage(iem, day, end)[0]:
+                try:
+                    out.append(P.Fetched("iem", day, end, self.clients.fetch_archive_reports(day, now)))
+                except Exception as e:
+                    self.log(f"  IEM archive {day:%Y-%m-%d} failed: {e}")
+            day += timedelta(days=1)
+        return out
+
     def update_reports(self, now: datetime) -> pd.DataFrame:
         try:
-            new = self.clients.fetch_recent_reports(now)
-            new = new[new["time"] <= pd.Timestamp(now)]
+            fetched = list(self.clients.fetch_recent_reports(now))
         except Exception as e:
             self.log(f"  report fetch failed: {e}")
-            new = P._frame([], P.REPORT_COLUMNS)
-        P.append_to_store(new, self.report_store)
+            fetched = []
+        n = added = 0
+        for f in fetched:
+            a, b = self._keep(f, now)
+            n, added = n + a, added + b
+        back = self.backfill_reports(now)   # after the recent spans are recorded
+        for f in back:
+            a, b = self._keep(f, now)
+            n, added = n + a, added + b
+        # once a cycle: merged spans, none older than any record can still use, so the file stays small
+        P.compact_coverage(self.report_store, keep_after=now - BACKFILL_MAX)
         df = P.read_store(self.report_store, legacy=self.legacy_store)
-        self.log(f"  reports: {len(new)} fetched, {len(df)} labelled layers in the live store")
+        self.log(f"  reports: {n} fetched ({len(back)} archive days backfilled), {added} new, "
+                 f"{len(df)} labelled layers in the live store")
         return df
 
     def grade(self, now: datetime, reports: pd.DataFrame) -> int:
-        due = [r for r in self.ledger.ungraded_due(now)
-               if r["task"] == TASK and from_iso(r["target_time"]) + GRADE_DELAY <= now]
+        due = self._due(now)
         if not due:
             return 0
         up = P.upper(P.in_domain(reports))
         up = up[up["time"] <= pd.Timestamp(now)]
-        items = []
+        cov = P.read_coverage(self.report_store)
+        items, waiting, lost = [], 0, []
         for r in due:
+            complete, sources = P.window_coverage(cov, *self._window(r))
+            if not complete:   # never grade against missing reports
+                if self.given_up(r, now):
+                    lost.append(r)
+                else:
+                    waiting += 1
+                continue
             v = pd.Timestamp(from_iso(r["target_time"]))
             w = up[(up["time"] - v).abs() <= TRUTH_WINDOW]
             truth = {"window_minutes": int(TRUTH_WINDOW.total_seconds() // 60),
-                     "n": int(len(w)),
+                     "n": int(len(w)), "sources": sources, "coverage": "complete",
                      "reports": [{"time": to_iso(t.to_pydatetime()), "lat": round(float(a), 4),
                                   "lon": round(float(b), 4), "fl": float(f), "code": int(c), "layer": int(l)}
                                  for t, a, b, f, c, l in zip(w["time"], w["lat"], w["lon"], w["fl"],
                                                              w["code"], w["layer"])]}
             items.append((r["seq"], truth))
-        self.ledger.grade_many(items, now=max(now, self.clock()))
-        self.log(f"  graded {len(items)} records")
+        if items:
+            self.ledger.grade_many(items, now=max(now, self.clock()))
+        if lost:
+            with open(self.lost_path, "a") as fh:
+                fh.writelines(json.dumps({"seq": r["seq"], "sealed_hash": r["hash"], "target_time": r["target_time"],
+                                          "recorded_at": to_iso(now)}) + "\n" for r in lost)
+        self.log(f"  graded {len(items)} records; {waiting} wait for report coverage"
+                 + (f"; {len(lost)} uncovered for over {GIVE_UP_AFTER.days} days, never graded" if lost else ""))
         return len(items)
 
     # ------------------------------------------------------------- cycle
     def cycle(self, now: datetime | None = None) -> dict:
         now = (now or self.clock()).replace(microsecond=0)
+        for _ in range(MAX_RESTARTS + 1):
+            try:
+                return self._cycle(now)
+            except StaleCycle as e:
+                self.log(f"  {e}; starting a fresh cycle")
+                now = self.clock().replace(microsecond=0)
+        raise RuntimeError(f"cycle abandoned {MAX_RESTARTS + 1} times: sealing never came within "
+                           f"{MAX_CYCLE_LAG} of the cycle's start")
+
+    def _cycle(self, now: datetime) -> dict:
         self.log(f"cycle at {to_iso(now)}")
-        self.refresh_fields(now)
+        fetched = self.refresh_fields(now)
+        if fetched is not None and fetched > now:  # forecasts are issued when their inputs exist
+            self.log(f"  issue time moved to the end of the field download, {to_iso(fetched)}")
+            now = fetched
         models, n_train = self.fit_models(now)
         sealed = self.seal(now, models, n_train)
+        for gap in self.ledger.check_gap(TASK, self.gap_after, now=now):  # only now is the gap's end known
+            self.log(f"  gap: nothing sealed from {gap['from']} to {gap['to']} ({gap['hours']} h); "
+                     f"{gap['due_while_away']} records came due meanwhile")
         reports = self.update_reports(now)
         graded = self.grade(now, reports)
+        lost = self.lost()
+        self.ledger.update_gaps(now, unrecoverable=lambda r, t: r["seq"] in lost)
         ok, n, msg = self.ledger.verify()
         self.log(f"  verify: {ok} ({n} records, {msg})")
         blend = next(m for m in models if m.name == "SeedBlend")
@@ -350,7 +471,8 @@ NOTES = [
     "The backtest uses hindsight fields (analysis-time comparison of indices), not forecasts; only these "
     "live sealed forecasts test forecast skill.",
     "A hit means the sealed risk at the report was in the top 20% of that forecast's grid at the report's level.",
-    "Records are graded 75 minutes after their valid hour, with report layers within 30 minutes of it.",
+    "Records are graded 75 minutes after their valid hour, with report layers within 30 minutes of it, "
+    "and only once the report store covers that whole window; uncovered records wait.",
 ]
 
 
@@ -420,6 +542,7 @@ def build_state(ledger: SealedLedger, reports: pd.DataFrame, fields_now, now: da
         "task": TASK,
         "ledger": {"records": n, "graded": len(graded), "head": head,
                    "verify": {"ok": verify[0], "checked": verify[1], "message": verify[2]}},
+        "gaps": ledger.gaps(),
         "grid": {**spec, "levels": [{"hpa": p, "flight_level": f} for p, f in
                                     zip(spec["levels_hpa"], spec["flight_levels"])]},
         "issued_at": last_issue,
@@ -447,7 +570,7 @@ def main(argv=None):
         print(f"{to_iso(utcnow())} {msg}", flush=True)
 
     F.ensure_backfill(F.FieldStore(), utcnow().replace(microsecond=0), log=log)
-    job = LiveJob(real_clients(log), log=log)
+    job = LiveJob(real_clients(log), log=log, interval=getattr(a, "interval", INTERVAL_S))
     if a.cmd == "once":
         job.cycle()
         return

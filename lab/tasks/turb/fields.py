@@ -200,6 +200,11 @@ def grid_spec() -> dict:
             "resolution_deg": 2.5}
 
 
+def stamp_download(fs: FieldSet, fetched_at: datetime) -> FieldSet:
+    """The same fields with their available times set from when the download finished."""
+    return replace(fs, avail=_availability(fs.times, fetched_at))
+
+
 def drop_nan_hours(fs: FieldSet) -> FieldSet:
     ok = np.array([np.isfinite(fs.speed[i]).mean() > 0.95 for i in range(len(fs.times))], bool)
     return fs.select(ok)

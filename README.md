@@ -79,6 +79,8 @@ Score the test window, once, at the end:
 ## Rules the code enforces
 
 - A forecast can be sealed only for a time still in the future, and graded only once that time has passed. Editing or deleting a sealed forecast breaks the hash chain.
+- A forecast is graded only against complete observations; a turbulence record whose report window is not covered waits, and is never graded against missing data.
+- A stretch with nothing sealed is recorded in `gaps.jsonl` beside the ledger, and a cycle that reaches sealing more than 10 minutes after it started is abandoned and run again.
 - A forecaster sees only what was known at the issue time. Weather inputs in backtests come from forecast runs that existed then.
 - A change to the forecaster is kept only if it wins on later data and does not lose on still later data.
 - The last window of history is scored once, by a person, and every look is logged.

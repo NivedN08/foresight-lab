@@ -27,6 +27,21 @@ model, at most one per target hour. Errors are absolute errors in **cm**.
 | `waves` | buoys, their forecasts and scoreboard; `null` if the wave part did not run this cycle |
 | `backtest_waves` | wave backtest: `generated_at`, `days`, `unit`, `table`, `paired_seed_vs` (same layout as `water.backtest`) and `note` (how the wave-model history was obtained, and the same caveat that the intervals are too narrow); `null` until `backtest_waves` has been run |
 | `alerts` | active National Weather Service coastal alerts for CA, OR, WA (may be empty) |
+| `gaps` | stretches with nothing sealed, from `runs/coast/live/gaps.jsonl`, oldest first (empty if none); see "Gaps and interrupted cycles" |
+
+## Gaps and interrupted cycles
+
+* **Gap record.** After a cycle seals, a stretch of more than two hours since the previous seal (water
+  seals once per target hour, so up to an hour between seals is normal) is recorded as one line in
+  `runs/coast/live/gaps.jsonl`, next to the ledger: `task`, `from` (last seal before the gap), `to` (the first seal after it), `hours`, `cause` (always "no forecast sealed in this period": cycles may have run and failed, and the job cannot know why), `seq_before` and `head_before` (chain position before the gap), `seq_after` (first seq sealed after it), `due_while_away` (records whose target fell inside the gap), `graded_late` (how many of those are graded now), `unrecoverable` (how many never will be), `recorded_at`, and `updated_at` once a follow-up line exists. A gap is written once (same
+  `task` and `from`). Later counts are appended as follow-up lines `{follow_up_of: {task, from},
+  graded_late, unrecoverable, recorded_at}`; no line is edited. Here `unrecoverable` counts records
+  still ungraded 7 days after their target. Gap lines are not in `sealed.jsonl` and do not affect
+  `verify`. Coast needs no backfill: each cycle reads weeks of gauge data, so records that came due
+  in a gap are graded from full observations.
+* **Interrupted cycle.** If sealing would happen more than 10 minutes after the cycle's start time
+  (the machine slept mid-cycle), nothing is sealed and the cycle starts again with the current
+  time (at most twice). The wave part does the same on its own.
 
 ## `ledger`
 

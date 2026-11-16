@@ -73,6 +73,46 @@ def test_ungraded_due(tmp_path):
     assert [r["case_id"] for r in due] == ["c0"]
 
 
+def test_gap_is_recorded_once_beside_the_chain(tmp_path):
+    led = SealedLedger(tmp_path)
+    led.seal_many([_forecast(i, h) for i, h in enumerate((1, 2, 30, 40))], now=T0)
+    assert led.gaps() == [] and led.check_gap("t", threshold=timedelta(hours=1)) == []
+    led.seal_many([_forecast(9, 48)], now=T0 + timedelta(minutes=50))
+    assert led.check_gap("t", threshold=timedelta(hours=1)) == []
+    assert not led.gaps_path.exists()
+
+    t1 = T0 + timedelta(hours=36, minutes=50)
+    led.seal_many([_forecast(10, 60)], now=t1)          # the first seal after the gap ends it
+    sealed_before = led.sealed_path.read_text()
+    [g] = led.check_gap("t", threshold=timedelta(hours=1), now=t1)
+    assert g["task"] == "t" and g["cause"] == "no forecast sealed in this period"
+    assert (g["from"], g["to"], g["hours"]) == ("2026-11-13T12:50:00Z", "2026-11-15T00:50:00Z", 36.0)
+    assert (g["seq_before"], g["head_before"], g["seq_after"]) == (4, led.sealed()[4]["hash"], 5)
+    assert (g["due_while_away"], g["graded_late"], g["unrecoverable"]) == (3, 0, 0)
+    assert g["recorded_at"] == "2026-11-15T00:50:00Z"
+    # the same gap seen again (a restarted cycle, a second process) is not written twice
+    assert led.check_gap("t", threshold=timedelta(hours=1)) == []
+    assert len(led.gaps_path.read_text().splitlines()) == 1
+
+    # progress is appended as follow-up lines; the first line is never edited
+    first_line = led.gaps_path.read_text()
+    led.grade_many([(0, {"v": 0}), (1, {"v": 1})], now=t1)
+    led.update_gaps(t1, unrecoverable=lambda r, now: r["seq"] == 2)
+    led.update_gaps(t1, unrecoverable=lambda r, now: r["seq"] == 2)   # nothing changed: nothing written
+    lines = led.gaps_path.read_text().splitlines()
+    assert len(lines) == 2 and led.gaps_path.read_text().startswith(first_line)
+    follow = json.loads(lines[1])
+    assert follow["follow_up_of"] == {"task": "t", "from": g["from"]}
+    assert (follow["graded_late"], follow["unrecoverable"]) == (2, 1)
+    [merged] = led.gaps()
+    assert (merged["graded_late"], merged["unrecoverable"], merged["due_while_away"]) == (2, 1, 3)
+
+    # the chain is untouched and still verifies
+    assert led.sealed_path.read_text() == sealed_before
+    assert led.verify() == (True, 6, "ok")
+    assert all("gap" not in json.dumps(r) for r in led.sealed())
+
+
 def test_time_split_never_leaks_future_into_training():
     cases = [Case(f"c{i}", T0 + timedelta(hours=i), T0 + timedelta(hours=i + 6)) for i in range(200)]
     tr, va, te = time_split(cases)

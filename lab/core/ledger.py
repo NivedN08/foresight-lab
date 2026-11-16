@@ -10,6 +10,12 @@ Rules enforced here:
   * a forecast can only be sealed for a target time that is still in the future;
   * a forecast can only be graded at or after its target time;
   * a forecast is graded at most once.
+
+Gaps: after a job seals, every stretch longer than its threshold between two
+consecutive seals is recorded once in gaps.jsonl (also append-only, outside
+the chain): from the last seal before it to the first seal after it, the chain
+position on each side, and how many records came due meanwhile. Later counts
+(graded late, never gradable) are appended as follow-up lines.
 """
 from __future__ import annotations
 
@@ -17,13 +23,14 @@ import fcntl
 import hashlib
 import json
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from .timeutil import from_iso, to_iso, utcnow
 
 GENESIS = "0" * 64
+GAP_CAUSE = "no forecast sealed in this period"  # cycles may have run and failed; the job cannot know why
 
 
 def _canonical(obj: Any) -> str:
@@ -45,6 +52,7 @@ class SealedLedger:
         self.sealed_path = self.dir / "sealed.jsonl"
         self.grades_path = self.dir / "grades.jsonl"
         self.anchors_path = self.dir / "anchors.jsonl"
+        self.gaps_path = self.dir / "gaps.jsonl"
         self._lock_path = self.dir / ".lock"
 
     # ------------------------------------------------------------------ io
@@ -195,3 +203,81 @@ class SealedLedger:
         with self._locked(), open(self.anchors_path, "a") as fh:
             fh.write(_canonical(a) + "\n")
         return a
+
+    # ---------------------------------------------------------------- gaps
+    def gaps(self) -> list[dict]:
+        """Recorded gaps, oldest first, each with the counts of its latest follow-up line."""
+        out: dict[tuple, dict] = {}
+        for g in self._read(self.gaps_path):
+            ref = g.get("follow_up_of")
+            if ref is None:
+                out[(g["task"], g["from"])] = dict(g)
+            elif (ref["task"], ref["from"]) in out:
+                out[(ref["task"], ref["from"])].update(graded_late=g["graded_late"],
+                                                       unrecoverable=g["unrecoverable"],
+                                                       updated_at=g["recorded_at"])
+        return list(out.values())
+
+    def _due_between(self, records: list[dict], start: str, end: str) -> list[dict]:
+        a, b = from_iso(start), from_iso(end)
+        return [r for r in records if a < from_iso(r["target_time"]) <= b]
+
+    def gap(self, task: str, start: datetime, end: datetime, cause: str = GAP_CAUSE,
+            now: datetime | None = None) -> dict | None:
+        """Record that nothing was sealed from `start` to `end`, in gaps.jsonl next
+        to the chain (the chain itself is not touched). Returns the new record, or
+        None if this gap (same task and start) is already recorded."""
+        with self._locked():
+            records = self.sealed()
+            frm, to = to_iso(start), to_iso(end)
+            if any(g["task"] == task and g["from"] == frm for g in self.gaps()):
+                return None
+            before = [r for r in records if from_iso(r["sealed_at"]) <= start]
+            after = [r for r in records if from_iso(r["sealed_at"]) >= end]
+            due = self._due_between(records, frm, to)
+            graded = self.grades()
+            g = {"task": task, "from": frm, "to": to, "hours": round((end - start).total_seconds() / 3600, 2),
+                 "cause": cause,
+                 "seq_before": before[-1]["seq"] if before else None,
+                 "head_before": before[-1]["hash"] if before else GENESIS,
+                 "seq_after": after[0]["seq"] if after else len(records),
+                 "due_while_away": len(due), "graded_late": sum(r["seq"] in graded for r in due),
+                 "unrecoverable": 0, "recorded_at": to_iso(now or utcnow())}
+            with open(self.gaps_path, "a") as fh:
+                fh.write(_canonical(g) + "\n")
+        return g
+
+    def check_gap(self, task: str, threshold: timedelta, cause: str = GAP_CAUSE,
+                  now: datetime | None = None) -> list[dict]:
+        """Called after a cycle has sealed: every stretch longer than `threshold`
+        between two consecutive sealing times is recorded (once each), from the
+        last seal before it to the first seal after it. Returns the new records."""
+        times = sorted({from_iso(r["sealed_at"]) for r in self.sealed()})
+        out = []
+        for a, b in zip(times, times[1:]):
+            if b - a > threshold:
+                g = self.gap(task, a, b, cause=cause, now=now)
+                if g is not None:
+                    out.append(g)
+        return out
+
+    def update_gaps(self, now: datetime, unrecoverable: Callable[[dict, datetime], bool] | None = None) -> list[dict]:
+        """For every gap, count the records that came due in it and have now been
+        graded, and those still ungraded that `unrecoverable(record, now)` says
+        will never be graded. A change is appended as a follow-up line that names
+        the gap; no line is ever edited. Returns the follow-up lines written."""
+        written = []
+        with self._locked():
+            records, graded = self.sealed(), self.grades()
+            for g in self.gaps():
+                due = self._due_between(records, g["from"], g["to"])
+                late = sum(r["seq"] in graded for r in due)
+                lost = sum(1 for r in due if r["seq"] not in graded and unrecoverable and unrecoverable(r, now))
+                if (late, lost) == (g["graded_late"], g["unrecoverable"]):
+                    continue
+                written.append({"follow_up_of": {"task": g["task"], "from": g["from"]},
+                                "graded_late": late, "unrecoverable": lost, "recorded_at": to_iso(now)})
+            if written:
+                with open(self.gaps_path, "a") as fh:
+                    fh.writelines(_canonical(w) + "\n" for w in written)
+        return written

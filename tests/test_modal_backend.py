@@ -147,12 +147,28 @@ def test_remote_protections_are_reported():
 
 
 def test_missing_modal_or_token_gives_setup_instructions(monkeypatch):
+    # A stand-in `modal` package, so the result does not depend on whether this
+    # machine has Modal installed or a token in ~/.modal.toml.
+    import sys
+    import types
+    fake_modal = types.ModuleType("modal")
+    fake_config = types.ModuleType("modal.config")
+    saved = {}
+    fake_config.config = SimpleNamespace(get=lambda key, *a, **k: saved.get(key))
+    fake_modal.config = fake_config
+    monkeypatch.setitem(sys.modules, "modal", fake_modal)
+    monkeypatch.setitem(sys.modules, "modal.config", fake_config)
+
     p = SynthProblem()
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
-    import modal.config
-    monkeypatch.setattr(modal.config.config, "get", lambda key, *a, **k: None)
     with pytest.raises(MB.ModalSetupError, match="modal token new"):
         MB.ModalEvalPool(p, p.splits())
+    saved["token_id"] = "ak-test"                 # a token in the config file is enough
+    assert MB.check_modal_setup() is fake_modal
+    saved.clear()
+    monkeypatch.setenv("MODAL_TOKEN_ID", "ak-test")   # ... and so is the environment variable
+    assert MB.check_modal_setup() is fake_modal
+    monkeypatch.delenv("MODAL_TOKEN_ID")
     import builtins
     real_import = builtins.__import__
 
