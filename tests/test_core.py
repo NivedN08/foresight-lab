@@ -113,6 +113,131 @@ def test_gap_is_recorded_once_beside_the_chain(tmp_path):
     assert all("gap" not in json.dumps(r) for r in led.sealed())
 
 
+# ------------------------------------------------------------------ regrades
+WHY = "graded without report coverage"
+
+
+def _graded(tmp_path):
+    """Three sealed records; 0 graded with an empty truth, 1 graded normally, 2 not graded."""
+    led = SealedLedger(tmp_path)
+    led.seal_many([_forecast(i) for i in range(3)], now=T0)
+    led.grade_many([(0, {"n": 0, "reports": []}), (1, {"n": 2, "reports": [1, 2]})],
+                   now=T0 + timedelta(hours=7))
+    return led
+
+
+def test_regrade_is_appended_once_and_leaves_the_grades_untouched(tmp_path):
+    led = _graded(tmp_path)
+    sealed_before, grades_before = led.sealed_path.read_bytes(), led.grades_path.read_bytes()
+    assert led.regrades() == [] and not led.regrades_path.exists()
+
+    t = T0 + timedelta(hours=9)
+    rg = led.regrade(0, {"n": 3, "reports": [7, 8, 9]}, WHY, now=t)
+    assert rg == {"seq": 0, "sealed_hash": led.sealed()[0]["hash"], "truth": {"n": 3, "reports": [7, 8, 9]},
+                  "reason": WHY, "replaces": {"graded_at": "2026-11-13T19:00:00Z", "n": 0},
+                  "recorded_at": "2026-11-13T21:00:00Z"}
+    assert led.regrades() == [rg]
+
+    with pytest.raises(LedgerError, match="already regraded"):
+        led.regrade(0, {"n": 4, "reports": []}, WHY, now=t)
+    with pytest.raises(LedgerError, match="no grade"):
+        led.regrade(2, {"n": 1, "reports": [1]}, WHY, now=t)       # sealed but never graded
+    with pytest.raises(LedgerError, match="no grade"):
+        led.regrade(99, {"n": 1, "reports": [1]}, WHY, now=t)      # not sealed at all
+    with pytest.raises(LedgerError, match="reason"):
+        led.regrade(1, {"n": 1, "reports": [1]}, "  ", now=t)
+    with pytest.raises(LedgerError):                               # all or nothing
+        led.regrade_many([(1, {"n": 5, "reports": []}), (2, {"n": 1, "reports": []})], WHY, now=t)
+    assert len(led.regrades_path.read_text().splitlines()) == 1
+
+    # the original files are byte for byte the same, and the original grade is still readable
+    assert led.sealed_path.read_bytes() == sealed_before and led.grades_path.read_bytes() == grades_before
+    assert led.grades()[0]["truth"] == {"n": 0, "reports": []}
+
+    # readers see the corrected truth and that the row was regraded
+    rows = led.joined()
+    assert rows[0]["regraded"] is True and rows[0]["grade"]["truth"] == {"n": 3, "reports": [7, 8, 9]}
+    assert rows[0]["grade"]["graded_at"] == "2026-11-13T19:00:00Z"
+    assert rows[0]["grade"]["regrade"] == {"reason": WHY, "replaces": rg["replaces"], "recorded_at": rg["recorded_at"]}
+    assert "regraded" not in rows[1] and rows[1]["grade"]["truth"] == {"n": 2, "reports": [1, 2]}
+    assert rows[2]["grade"] is None
+    assert led.verify() == (True, 3, "ok")
+
+
+def test_verify_rejects_a_regrade_that_does_not_match(tmp_path):
+    led = _graded(tmp_path)
+    led.regrade(0, {"n": 3, "reports": []}, WHY, now=T0 + timedelta(hours=9))
+    good = led.regrades_path.read_text()
+    line = json.loads(good)
+
+    led.regrades_path.write_text(json.dumps({**line, "sealed_hash": "f" * 64}) + "\n")
+    ok, where, msg = led.verify()
+    assert not ok and where == 0
+    assert msg == "regrade for record 0 does not match the sealed record (sealed_hash differs)"
+
+    led.regrades_path.write_text(json.dumps({**line, "seq": 7}) + "\n")
+    ok, where, msg = led.verify()
+    assert not ok and where == 7 and msg == "regrade for record 7 refers to no sealed record"
+
+    led.regrades_path.write_text(json.dumps({**line, "seq": 2, "sealed_hash": led.sealed()[2]["hash"]}) + "\n")
+    ok, where, msg = led.verify()
+    assert not ok and where == 2 and msg == "regrade for record 2 has no original grade to correct"
+
+    led.regrades_path.write_text(good + good)
+    ok, where, msg = led.verify()
+    assert not ok and where == 0 and msg == "record 0 is regraded more than once"
+
+    led.regrades_path.write_text(good)
+    assert led.verify() == (True, 3, "ok")
+
+
+def test_ledger_without_regrades_behaves_as_before(tmp_path):
+    led = _graded(tmp_path)
+    grades = led.grades()
+    assert led.regrades() == []
+    assert led.joined() == [{**r, "grade": grades.get(r["seq"])} for r in led.sealed()]
+    assert led.verify() == (True, 3, "ok")
+    assert not led.regrades_path.exists()      # reading creates nothing
+
+
+def test_gap_follow_up_counts_regraded_records(tmp_path):
+    led = SealedLedger(tmp_path)
+    led.seal_many([_forecast(i, h) for i, h in enumerate((1, 2, 30))], now=T0)
+    t1 = T0 + timedelta(hours=36)
+    led.seal_many([_forecast(9, 48)], now=t1)
+    assert len(led.check_gap("t", threshold=timedelta(hours=1), now=t1)) == 1
+    led.grade_many([(s, {"n": 0, "reports": []}) for s in (0, 1, 2)], now=t1)
+    led.update_gaps(t1)
+    assert led.gaps()[0]["graded_late"] == 3 and led.gaps()[0]["regraded"] == 0
+    before = led.gaps_path.read_text()
+
+    t2 = t1 + timedelta(hours=1)
+    led.regrade_many([(0, {"n": 4, "reports": []}), (1, {"n": 2, "reports": []})], WHY, now=t2)
+    led.update_gaps(t2)
+    led.update_gaps(t2)                                     # nothing changed: nothing written
+    text = led.gaps_path.read_text()
+    assert text.startswith(before) and len(text.splitlines()) == len(before.splitlines()) + 1
+    follow = json.loads(text.splitlines()[-1])
+    assert (follow["graded_late"], follow["unrecoverable"], follow["regraded"]) == (3, 0, 2)
+    [merged] = led.gaps()
+    assert (merged["due_while_away"], merged["graded_late"], merged["regraded"]) == (3, 3, 2)
+    assert led.verify()[0]
+
+
+def test_old_gap_lines_without_a_regraded_count_read_as_zero(tmp_path):
+    led = SealedLedger(tmp_path)
+    led.gaps_path.write_text(
+        json.dumps({"task": "t", "from": "2026-11-13T12:00:00Z", "to": "2026-11-15T00:00:00Z", "hours": 36.0,
+                    "cause": "x", "seq_before": None, "head_before": "0" * 64, "seq_after": 0,
+                    "due_while_away": 0, "graded_late": 0, "unrecoverable": 0,
+                    "recorded_at": "2026-11-15T00:00:00Z"}) + "\n"
+        + json.dumps({"follow_up_of": {"task": "t", "from": "2026-11-13T12:00:00Z"}, "graded_late": 0,
+                      "unrecoverable": 0, "recorded_at": "2026-11-15T01:00:00Z"}) + "\n")
+    [g] = led.gaps()
+    assert g["regraded"] == 0
+    assert led.update_gaps(T0 + timedelta(days=3)) == []    # no new line for a missing zero
+
+
 def test_time_split_never_leaks_future_into_training():
     cases = [Case(f"c{i}", T0 + timedelta(hours=i), T0 + timedelta(hours=i + 6)) for i in range(200)]
     tr, va, te = time_split(cases)

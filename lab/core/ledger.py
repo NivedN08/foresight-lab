@@ -15,7 +15,17 @@ Gaps: after a job seals, every stretch longer than its threshold between two
 consecutive seals is recorded once in gaps.jsonl (also append-only, outside
 the chain): from the last seal before it to the first seal after it, the chain
 position on each side, and how many records came due meanwhile. Later counts
-(graded late, never gradable) are appended as follow-up lines.
+(graded late, regraded, never gradable) are appended as follow-up lines.
+
+Regrades: a grade whose truth was formed from incomplete data (for example
+reports that had not been fetched yet) can be corrected once, by appending a
+line to regrades.jsonl: {seq, sealed_hash, truth, reason, replaces: {graded_at,
+n}, recorded_at}. This is allowed only for that purpose, and the reason must
+say what was incomplete. The original line in grades.jsonl is kept unchanged
+and stays readable through grades(); joined() hands readers the corrected
+truth and marks the row as regraded. A record can be regraded at most once,
+only if it has a grade, and verify() checks every regrade against the sealed
+record and the grade it replaces.
 """
 from __future__ import annotations
 
@@ -53,6 +63,7 @@ class SealedLedger:
         self.grades_path = self.dir / "grades.jsonl"
         self.anchors_path = self.dir / "anchors.jsonl"
         self.gaps_path = self.dir / "gaps.jsonl"
+        self.regrades_path = self.dir / "regrades.jsonl"
         self._lock_path = self.dir / ".lock"
 
     # ------------------------------------------------------------------ io
@@ -168,9 +179,59 @@ class SealedLedger:
         ]
 
     def joined(self) -> list[dict]:
-        """Sealed records with their grade (or None) attached under 'grade'."""
+        """Sealed records with their grade (or None) attached under 'grade'. A
+        regraded record gets the corrected truth, the regrade's reason, what it
+        replaces and when under grade['regrade'], and 'regraded': True."""
         graded = self.grades()
-        return [{**r, "grade": graded.get(r["seq"])} for r in self.sealed()]
+        fixed = {g["seq"]: g for g in self.regrades()}
+        out = []
+        for r in self.sealed():
+            g, rg = graded.get(r["seq"]), fixed.get(r["seq"])
+            if g is not None and rg is not None:
+                out.append({**r, "grade": {**g, "truth": rg["truth"],
+                                           "regrade": {k: rg[k] for k in ("reason", "replaces", "recorded_at")}},
+                            "regraded": True})
+            else:
+                out.append({**r, "grade": g})
+        return out
+
+    # ------------------------------------------------------------- regrade
+    def regrades(self) -> list[dict]:
+        """The regrade lines, oldest first (empty if there is no regrades.jsonl)."""
+        return self._read(self.regrades_path)
+
+    def regrade(self, seq: int, truth: dict, reason: str, now: datetime | None = None) -> dict:
+        return self.regrade_many([(seq, truth)], reason, now=now)[0]
+
+    def regrade_many(self, items: Iterable[tuple[int, dict]], reason: str,
+                     now: datetime | None = None) -> list[dict]:
+        """Correct the truth of graded records whose grade was formed from
+        incomplete data, by appending to regrades.jsonl. Every item is checked
+        before anything is written: each seq must have a grade and no earlier
+        regrade, and `reason` must say what was incomplete. No existing line
+        of any file is changed."""
+        if not isinstance(reason, str) or not reason.strip():
+            raise LedgerError("a regrade needs a reason (what was incomplete about the original truth)")
+        items = list(items)
+        with self._locked():
+            records, graded = self.sealed(), self.grades()
+            done = {g["seq"] for g in self.regrades()}
+            recorded_at = to_iso(now or utcnow())
+            out = []
+            for seq, truth in items:
+                if seq not in graded or not 0 <= seq < len(records):
+                    raise LedgerError(f"record {seq} has no grade to correct")
+                if seq in done:
+                    raise LedgerError(f"record {seq} is already regraded")
+                old = graded[seq]
+                out.append({"seq": seq, "sealed_hash": records[seq]["hash"], "truth": truth, "reason": reason,
+                            "replaces": {"graded_at": old["graded_at"], "n": old["truth"].get("n")},
+                            "recorded_at": recorded_at})
+                done.add(seq)
+            if out:
+                with open(self.regrades_path, "a") as fh:
+                    fh.writelines(_canonical(g) + "\n" for g in out)
+        return out
 
     # -------------------------------------------------------------- verify
     def verify(self) -> tuple[bool, int, str]:
@@ -188,11 +249,25 @@ class SealedLedger:
             if from_iso(rec["target_time"]) <= from_iso(rec["sealed_at"]):
                 return False, i, f"record {i} was sealed after its target time"
             prev = rec["hash"]
-        for seq, g in self.grades().items():
+        graded, seen = self.grades(), set()
+        for seq, g in graded.items():
             if seq >= len(records) or g["sealed_hash"] != records[seq]["hash"]:
                 return False, seq, f"grade for record {seq} does not match the sealed record"
             if from_iso(g["graded_at"]) < from_iso(records[seq]["target_time"]):
                 return False, seq, f"grade for record {seq} predates its target time"
+        for rg in self.regrades():
+            seq = rg.get("seq")
+            if not isinstance(seq, int) or not 0 <= seq < len(records):
+                return False, seq, f"regrade for record {seq} refers to no sealed record"
+            if rg.get("sealed_hash") != records[seq]["hash"]:
+                return False, seq, f"regrade for record {seq} does not match the sealed record (sealed_hash differs)"
+            if seq not in graded:
+                return False, seq, f"regrade for record {seq} has no original grade to correct"
+            if (rg.get("replaces") or {}).get("graded_at") != graded[seq]["graded_at"]:
+                return False, seq, f"regrade for record {seq} does not name the grade it replaces"
+            if seq in seen:
+                return False, seq, f"record {seq} is regraded more than once"
+            seen.add(seq)
         return True, len(records), "ok"
 
     def anchor(self, note: str = "") -> dict:
@@ -206,15 +281,19 @@ class SealedLedger:
 
     # ---------------------------------------------------------------- gaps
     def gaps(self) -> list[dict]:
-        """Recorded gaps, oldest first, each with the counts of its latest follow-up line."""
+        """Recorded gaps, oldest first, each with the counts of its latest follow-up
+        line. `graded_late` counts every record due in the gap that has a grade;
+        `regraded` how many of those grades were later corrected (0 when no
+        line carries the count, as in lines written before regrades existed)."""
         out: dict[tuple, dict] = {}
         for g in self._read(self.gaps_path):
             ref = g.get("follow_up_of")
             if ref is None:
-                out[(g["task"], g["from"])] = dict(g)
+                out[(g["task"], g["from"])] = {**g, "regraded": g.get("regraded", 0)}
             elif (ref["task"], ref["from"]) in out:
                 out[(ref["task"], ref["from"])].update(graded_late=g["graded_late"],
                                                        unrecoverable=g["unrecoverable"],
+                                                       regraded=g.get("regraded", 0),
                                                        updated_at=g["recorded_at"])
         return list(out.values())
 
@@ -263,20 +342,24 @@ class SealedLedger:
 
     def update_gaps(self, now: datetime, unrecoverable: Callable[[dict, datetime], bool] | None = None) -> list[dict]:
         """For every gap, count the records that came due in it and have now been
-        graded, and those still ungraded that `unrecoverable(record, now)` says
-        will never be graded. A change is appended as a follow-up line that names
-        the gap; no line is ever edited. Returns the follow-up lines written."""
+        graded, how many of those grades were later corrected (regrades.jsonl),
+        and those still ungraded that `unrecoverable(record, now)` says will
+        never be graded. A change is appended as a follow-up line that names the
+        gap; no line is ever edited. Returns the follow-up lines written."""
         written = []
         with self._locked():
             records, graded = self.sealed(), self.grades()
+            fixed = {g["seq"] for g in self.regrades()}
             for g in self.gaps():
                 due = self._due_between(records, g["from"], g["to"])
                 late = sum(r["seq"] in graded for r in due)
+                redone = sum(r["seq"] in graded and r["seq"] in fixed for r in due)
                 lost = sum(1 for r in due if r["seq"] not in graded and unrecoverable and unrecoverable(r, now))
-                if (late, lost) == (g["graded_late"], g["unrecoverable"]):
+                if (late, lost, redone) == (g["graded_late"], g["unrecoverable"], g["regraded"]):
                     continue
                 written.append({"follow_up_of": {"task": g["task"], "from": g["from"]},
-                                "graded_late": late, "unrecoverable": lost, "recorded_at": to_iso(now)})
+                                "graded_late": late, "unrecoverable": lost, "regraded": redone,
+                                "recorded_at": to_iso(now)})
             if written:
                 with open(self.gaps_path, "a") as fh:
                     fh.writelines(_canonical(w) + "\n" for w in written)

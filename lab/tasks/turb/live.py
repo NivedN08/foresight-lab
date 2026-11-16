@@ -320,15 +320,7 @@ class LiveJob:
                 else:
                     waiting += 1
                 continue
-            v = pd.Timestamp(from_iso(r["target_time"]))
-            w = up[(up["time"] - v).abs() <= TRUTH_WINDOW]
-            truth = {"window_minutes": int(TRUTH_WINDOW.total_seconds() // 60),
-                     "n": int(len(w)), "sources": sources, "coverage": "complete",
-                     "reports": [{"time": to_iso(t.to_pydatetime()), "lat": round(float(a), 4),
-                                  "lon": round(float(b), 4), "fl": float(f), "code": int(c), "layer": int(l)}
-                                 for t, a, b, f, c, l in zip(w["time"], w["lat"], w["lon"], w["fl"],
-                                                             w["code"], w["layer"])]}
-            items.append((r["seq"], truth))
+            items.append((r["seq"], window_truth(r["target_time"], up, sources)))
         if items:
             self.ledger.grade_many(items, now=max(now, self.clock()))
         if lost:
@@ -378,6 +370,22 @@ class LiveJob:
 
 
 # ------------------------------------------------------------------ scoring
+def window_truth(target_time: str, up: pd.DataFrame, sources: list[str] | None = None) -> dict:
+    """The truth of a record valid at `target_time`: the upper-level report
+    layers in `up` within TRUTH_WINDOW of it. With `sources` (the sources whose
+    coverage spans fall in a fully covered window) the truth also records them
+    and coverage "complete"; the job only ever grades such windows."""
+    v = pd.Timestamp(from_iso(target_time))
+    w = up[(up["time"] - v).abs() <= TRUTH_WINDOW]
+    truth = {"window_minutes": int(TRUTH_WINDOW.total_seconds() // 60), "n": int(len(w))}
+    if sources is not None:
+        truth.update(sources=list(sources), coverage="complete")
+    truth["reports"] = [{"time": to_iso(t.to_pydatetime()), "lat": round(float(a), 4), "lon": round(float(b), 4),
+                         "fl": float(f), "code": int(c), "layer": int(l)}
+                        for t, a, b, f, c, l in zip(w["time"], w["lat"], w["lon"], w["fl"], w["code"], w["layer"])]
+    return truth
+
+
 def score_record(record: dict, lat, lon, fl) -> dict[str, np.ndarray]:
     """Risk a sealed record gave at report positions, its percentile within the
     sealed grid (at the grid level nearest the report), and whether it was in
@@ -473,7 +481,19 @@ NOTES = [
     "A hit means the sealed risk at the report was in the top 20% of that forecast's grid at the report's level.",
     "Records are graded 75 minutes after their valid hour, with report layers within 30 minutes of it, "
     "and only once the report store covers that whole window; uncovered records wait.",
+    "A grade formed from incomplete reports may be corrected once in regrades.jsonl (the original grade line "
+    "is kept); scores use the corrected truth.",
 ]
+
+
+def regrade_summary(ledger: SealedLedger, sealed: list[dict]) -> dict:
+    """How many of these records have a corrected grade, why, and the valid
+    times of the affected forecasts."""
+    by_seq = {r["seq"]: r for r in sealed}
+    lines = [g for g in ledger.regrades() if g["seq"] in by_seq]
+    valid = sorted(by_seq[g["seq"]]["target_time"] for g in lines)
+    return {"count": len(lines), "reasons": sorted({g["reason"] for g in lines}),
+            "valid_from": valid[0] if valid else None, "valid_to": valid[-1] if valid else None}
 
 
 def build_state(ledger: SealedLedger, reports: pd.DataFrame, fields_now, now: datetime, *,
@@ -543,6 +563,7 @@ def build_state(ledger: SealedLedger, reports: pd.DataFrame, fields_now, now: da
         "ledger": {"records": n, "graded": len(graded), "head": head,
                    "verify": {"ok": verify[0], "checked": verify[1], "message": verify[2]}},
         "gaps": ledger.gaps(),
+        "regrades": regrade_summary(ledger, sealed),
         "grid": {**spec, "levels": [{"hpa": p, "flight_level": f} for p, f in
                                     zip(spec["levels_hpa"], spec["flight_levels"])]},
         "issued_at": last_issue,

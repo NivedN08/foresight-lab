@@ -77,7 +77,7 @@ def _joined_cached(task: str) -> list[dict]:
     """Sealed records joined with their grades, re-read only when a file changed."""
     led = SealedLedger(_task_dir(task))
     key = tuple((p.stat().st_mtime_ns, p.stat().st_size) if p.exists() else None
-                for p in (led.sealed_path, led.grades_path))
+                for p in (led.sealed_path, led.grades_path, led.regrades_path))
     hit = _RECORDS_CACHE.get(task)
     if hit is None or hit[0] != key:
         hit = (key, led.joined())

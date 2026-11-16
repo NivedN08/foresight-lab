@@ -134,10 +134,31 @@ no reports at all, against a store that only held the last few hours.
 **Gap record.** After a cycle seals, a stretch of more than two intervals
 (one hour at the default 30 minutes) since the previous seal is recorded as
 one line in
-`runs/turb/live/gaps.jsonl`: `task`, `from` (last seal before the gap), `to` (the first seal after it), `hours`, `cause` (always "no forecast sealed in this period": cycles may have run and failed, and the job cannot know why), `seq_before` and `head_before` (chain position before the gap), `seq_after` (first seq sealed after it), `due_while_away` (records whose target fell inside the gap), `graded_late` (how many of those are graded now), `unrecoverable` (how many never will be), `recorded_at`, and `updated_at` once a follow-up line exists. A gap is written once (same
+`runs/turb/live/gaps.jsonl`: `task`, `from` (last seal before the gap), `to` (the first seal after it), `hours`, `cause` (always "no forecast sealed in this period": cycles may have run and failed, and the job cannot know why), `seq_before` and `head_before` (chain position before the gap), `seq_after` (first seq sealed after it), `due_while_away` (records whose target fell inside the gap), `graded_late` (how many of those are graded now), `regraded` (how many of those graded ones later had their grade corrected, see "Regrades"; `graded_late - regraded` were graded late with complete reports), `unrecoverable` (how many never will be), `recorded_at`, and `updated_at` once a follow-up line exists. A gap is written once (same
 `task` and `from`); later counts are appended as follow-up lines
-`{follow_up_of: {task, from}, graded_late, unrecoverable, recorded_at}` and
-no line is edited. Gap lines are not in `sealed.jsonl` and do not affect
+`{follow_up_of: {task, from}, graded_late, unrecoverable, regraded, recorded_at}` and
+no line is edited (follow-up lines written before regrades existed lack
+`regraded`; it reads as 0).
+
+**Regrades.** A grade whose truth was formed from incomplete data can be
+corrected once, in `runs/turb/live/regrades.jsonl` beside the ledger:
+`{seq, sealed_hash, truth, reason, replaces: {graded_at, n}, recorded_at}`
+(`SealedLedger.regrade`). This is allowed only when the original truth was
+formed from incomplete data, and `reason` must say what was incomplete. The
+original line in `grades.jsonl` stays as it is and remains readable; a record
+can be regraded only if it has a grade, and only once. The scoreboard,
+`reports_12h[].graded` and every other reader of `SealedLedger.joined()` use
+the corrected truth (the row carries `regraded: true` and `grade.regrade` with
+the reason). `verify` also checks that every regrade names an existing sealed
+record with the matching `sealed_hash` and the grade it replaces. The 329
+grades of the first cycle after the 35.7-hour freeze (graded_at
+2026-11-16T08:50:18Z) are the case this exists for; `scripts/turb_regrade.py`
+corrects them with reason
+"graded without report coverage after a 35.7 h freeze; corrected from the IEM
+archive"; it recomputes each truth with the job's grading function from the
+IEM archive merged with the live store, only where the archive covers the
+whole window, writes nothing without `--apply`, and skips records already
+regraded. Gap lines are not in `sealed.jsonl` and do not affect
 `verify`. The check scans the whole chain, so the first cycle after this
 change also records the gaps already in the history (on the current state:
 2.1, 2.02 and 35.74 hours for turbulence; 2.13 and 35.5 hours for coast).
@@ -195,6 +216,9 @@ One sealed record per model and valid hour per cycle (about 42 per cycle).
   coverage spans fall in the window: `["awc"]`, `["iem"]` or both) and
   `coverage` (`"complete"`, the only value a grade can have). Older grades
   lack both and were not checked for coverage
+* regrade (in `regrades.jsonl`, not in `grades.jsonl`): the corrected `truth`
+  in the same shape, with `sources` and `coverage`, plus `reason` and
+  `replaces: {graded_at, n}` of the original grade
 
 ## state.json fields
 
@@ -206,7 +230,8 @@ One sealed record per model and valid hour per cycle (about 42 per cycle).
 | `ledger.graded` | records with a grade |
 | `ledger.head` | hash of the last sealed record |
 | `ledger.verify` | `{ok, checked, message}` from `SealedLedger.verify()` |
-| `gaps` | stretches with nothing sealed, from `runs/turb/live/gaps.jsonl`, oldest first, each with the counts of its latest follow-up line (empty if none) |
+| `gaps` | stretches with nothing sealed, from `runs/turb/live/gaps.jsonl`, oldest first, each with the counts of its latest follow-up line, including `regraded` (empty if none) |
+| `regrades` | corrected grades from `runs/turb/live/regrades.jsonl`: `{count, reasons, valid_from, valid_to}`, the valid times of the earliest and latest affected forecast (`count` 0 and nulls if none) |
 | `grid.lats`, `grid.lons` | grid axes (degrees; 25.0..50.0 and -125.0..-67.5 every 2.5) |
 | `grid.levels_hpa`, `grid.flight_levels` | the six levels and the flight level each stands for (standard atmosphere); `grid.levels` is the same as a list of `{hpa, flight_level}` |
 | `grid.resolution_deg` | 2.5 |
@@ -485,6 +510,8 @@ A scoreboard entry: `"SeedBlend": {"at_least_1h": {"n": 812, "positives": 190, "
 .venv/bin/python -m lab.tasks.turb.backtest --days 30     # table, writes runs/turb/backtest.json
 .venv/bin/python -m lab.tasks.turb.live once              # one cycle
 nohup .venv/bin/python -m lab.tasks.turb.live run --interval 1800 >> runs/turb/live/loop.log 2>&1 &
+.venv/bin/python scripts/turb_regrade_dry_run.py           # read-only report on the unsound grades
+.venv/bin/python scripts/turb_regrade.py --live-dir runs/turb/live [--apply]   # print, or append the regrades
 .venv/bin/python -m pytest tests/test_turb_*.py
 ```
 
