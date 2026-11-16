@@ -17,6 +17,7 @@ Private rehearsal repository for the SF AI Research Hackathon (Nov 14–15, 2026
 | `lab/swarm/`, `lab/memory/`, `lab/search/`, `lab/llm/` | The research loop, its notebook, literature search, model backends |
 | `lab/experiments/` | Experiment matrix, report, one-time test scorer |
 | `dashboard/`, `lab/server.py` | Live dashboard |
+| `web/` | Display page for showing the project: the real stations and sky, the ledger as a timeline with gaps, the scoreboard, the research loop and a presentation mode. See `web/README.md` |
 | `planning/` | Event brief, idea log, spec, protocol, sponsor playbook, schedule, pitch, risks, checklists, rebuild guide |
 | `docs/` | How each part works |
 
